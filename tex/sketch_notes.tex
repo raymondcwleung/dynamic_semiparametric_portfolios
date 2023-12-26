@@ -1,0 +1,153 @@
+
+\documentclass{article}
+
+\usepackage[table]{xcolor}         % colors
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{subcaption, booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{amssymb, amsmath, amsthm, mathtools, mathrsfs} 
+\usepackage{bbm}
+\usepackage{todonotes}
+\usepackage{multirow}
+\usepackage{enumerate}
+\usepackage{caption}
+\usepackage{lipsum}
+\usepackage{pdflscape}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{geometry}
+\usepackage{titlesec}
+
+\usepackage{colortbl}
+\usepackage{array}
+\usepackage{bold-extra}
+
+\usepackage{tikz}
+\usetikzlibrary{matrix, positioning}
+
+% Setup the caption for Tables and Figures
+\captionsetup{labelfont=bf}
+
+
+\input{./math_symbols.tex}
+\newcommand{\C}{\mathbb{C}} %complex numbers 
+
+\SetLipsumParListSurrounders{\colorlet{oldcolor}{.}\color{orange}}{\color{oldcolor}}
+
+\newcolumntype{P}[1]{>{\centering\arraybackslash}p{#1}}
+
+% Unnumbered theorem styles 
+\theoremstyle{plain}
+\newtheorem*{empiricalimp*}{Empirical Hypothesis}
+\newtheorem*{thm*}{Theorem}
+\newtheorem*{exercise*}{Exercise} 
+\newtheorem*{example*}{Example} 
+\newtheorem*{discussion*}{Discussion} 
+\newtheorem*{claim*}{Claim}
+\newtheorem*{lem*}{Lemma}
+\newtheorem*{prop*}{Proposition}
+\newtheorem*{cor*}{Corollary}
+%\newtheorem*{KL}{Klein's Lemma}
+\newtheorem*{defn*}{Definition}
+\newtheorem{conjecture}{Conjecture}[section]
+\theoremstyle{remark}
+\newtheorem*{rem*}{Remark}
+\newtheorem*{note*}{Note}
+\newtheorem{case*}{Case}
+
+
+
+%% Results path
+%\makeatletter
+%\def\input@path{{../data/simulations/tex/}{../data/realworld/tex/}}
+%%or: \def\input@path{{/path/to/folder/}{/path/to/other/folder/}}
+%\makeatother
+%
+%\graphicspath{{../data/realworld/fig/}}
+
+
+\title{\textcolor{red}{Dynamic Semiparametric Portfolio Choice with Elicitable Risk Constraints}}
+
+\date{\textcolor{red}{Some date}}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  Raymond C.\ W.\ Leung\thanks{Hi} \\
+  \texttt{raymond.chi.wai.leung@gmail.com} 
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Paper variables
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newcommand{\DataStart}{\textcolor{red}{Data Start}}
+\newcommand{\DataEnd}{\textcolor{red}{Data End}}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+
+
+\maketitle
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+	\lipsum[77]
+\end{abstract}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+Primary references: \cite{patton2019dynamic}, \cite{chen2016semiparametric}
+
+Secondary references: \cite{dimitriadis2019joint}
+
+Portfolio choice: \cite{brandt1999estimating}
+
+Mechanism design: \cite{rogerson1985first}, \cite{mirrlees1999theory} (written in 1975 but published in 1999), \cite{jewitt1988justifying}
+
+Score models: \cite{creal2013generalized}, recent surveys \cite{artemova2022scoretheory, artemova2022scoreapplications}
+
+Nonlinear regression: \cite{huber1967behavior}, \cite{white1984nonlinear}, \cite{oberhofer1982consistency}, \cite{powell1984least}, \cite{weiss1991estimating}
+
+Quantile regression: \cite{koenker2005quantile, koenker2017quantile}
+
+Financial econometrics: \cite{engle2004caviar}
+
+Elicitable risks: \cite{fissler2016higher}, \cite{gneiting2011making},  recent survey \cite{he2022risk}
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Bibliography 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newpage
+\bibliographystyle{apalike}
+\bibliography{references}
+
+\newpage
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Appendix
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%\newpage
+%\appendix
+%\input{appendix.tex}
+
+
+
+
+\end{document}
