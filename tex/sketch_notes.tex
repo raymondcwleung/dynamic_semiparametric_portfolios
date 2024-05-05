@@ -22,6 +22,7 @@
 \usepackage{multirow}
 \usepackage{geometry}
 \usepackage{titlesec}
+\usepackage{optidef}
 
 \usepackage{colortbl}
 \usepackage{array}
@@ -110,6 +111,67 @@
 \end{abstract}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Setup sketch}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+$\riskmeasurespace \subseteq \R^p$ and $\riskmeasureconstraints \subseteq \riskmeasurespace$
+
+Consider the myopic problem
+% \begin{align}
+% 	% \begin{gathered}
+% 	\max_{\portfolio \in \portfoliospace, \riskmeasure \in \riskmeasureconstraints}\; \E_{t - 1}\left[ \utility(\wealth_t^{\portfolio}) \right] equation \\
+% 	\text{subject to:}                                                                                                                                   \\
+% 	\wealth_t^{\portfolio} = w_0 ( \riskfreerate_t + \portfolio^\top ( \returns_t - \riskfreerate_t \ind_\numassets )  )                                 \\
+% 	\riskmeasure \in \argmin_{\riskmeasure' \in \riskmeasurespace}\; \E_{t - 1} \left[ \riskloss( \riskmeasure', \wealth_t^{\portfolio}) \right]
+% 	% \end{gathered}
+% \end{align}
+
+
+\begin{maxi!}|l|
+{\portfolio \in \portfoliospace, \riskmeasure \in \riskmeasureconstraints} {\E_{t - 1}\left[ \utility(\wealth_t^{\portfolio}) \right] \label{eq:OrangeObjFunc} }{\label{eq:OrangeOptimProb}}{}
+\addConstraint{\wealth_t^{\portfolio} = w_0 ( \riskfreerate_t + \portfolio^\top ( \returns_t - \riskfreerate_t \onevec_\numassets )) }{ \label{eq:OrangeWealth}}
+\addConstraint{\riskmeasure \in \argmin_{\riskmeasure'}\; \E_{t - 1} \left[ \riskloss( \riskmeasure', \wealth_t^{\portfolio}) \right]}{ \label{eq:OrangeRiskIC} }
+\end{maxi!}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Illustration}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\todo{Find reference}
+Suppose we have asset returns $\returns \sim \normaldist(\meanvec, \covmat)$. Suppose we have CARA utility $\utility(w) = - e^{-\gamma w}$ for some risk aversion parameter $\gamma > 0$. By conventional arguments,
+\begin{equation}
+	\E[\utility(W)] = -\exp\left\{ -\gamma w_0 \left[ \riskfreerate + \portfolio^\top (\meanvec - \riskfreerate \onevec_\numassets) - \frac{\gamma w_0}{2} \portfolio^\top \covmat \portfolio \right] \right\}
+	\label{eq:CARAUtility}
+\end{equation}
+
+Fixing a level $\alpha \in (0,1)$, it is well known the the score function $S(x,y) = (\ind\{x \ge y\} - \alpha)(x - y)$ will lead to the $\alpha$-quantile. Hence, \eqref{eq:OrangeRiskIC} solves explicitly to
+\begin{equation}
+	\VaR_\alpha(\portfolio)
+	= \argmin_{v'} \E[\riskloss(v', \wealth_t^{\portfolio})]
+	= w_0\left(\riskfreerate + \portfolio^\top (\meanvec - \riskfreerate \onevec_\numassets ) + \sqrt{2} \Erf^{-1}(2\alpha - 1)  \sqrt{  \portfolio^{\top} \covmat \portfolio }   \right)
+	\label{eq:CARAVaR}
+\end{equation}
+Suppose we have the constraint set $\riskmeasureconstraints = \{ v' \in \R : v' \le w_0 \bar{v} \}$ for some constant $\bar{v} \le 0$. Putting everything together, we reduce the optimization problem to
+
+\begin{maxi}
+	{\portfolio \in \R^\numassets}{ \riskfreerate + \portfolio^\top (\meanvec - \riskfreerate \onevec_\numassets) - \frac{\gamma w_0}{2} \portfolio^\top \covmat \portfolio }{}{}
+	\addConstraint{ \riskfreerate + \portfolio^\top (\meanvec - \riskfreerate \onevec\numassets ) + \sqrt{2} \Erf^{-1}(2\alpha - 1)  \sqrt{  \portfolio^{\top} \covmat \portfolio } \le \bar{v} }
+\end{maxi}
+
+The constraint $v \in \riskmeasureconstraints$ behaves like an \emph{individual rationality} constraint in the principal-agent literature.
+\footnote{
+	Strictly speaking, we should formulate the individual rationality constraint in terms of the agent's utility function. In our current setup, it would take the form $\E[ \riskloss(v', \wealth^{\portfolio}) ] \ge \underbar{\riskloss}$ for some constant $\underbar{\riskloss}$.
+}
+
+
+\todo{Find reference for risk preference difference in principal-agent lit}
+Our highly stylized principal-agent problem here illustrates the tension between the principal (``portfolio manager'') and the agent (``risk manager''). Under this stylized illustration, the principal is a mean-variance optimizer while the agent is a mean-standard deviation optimizer. Up to the VaR constraint of $\bar{v}$, the principal and the agent have the same first moment term $\riskfreerate + \pi^\top( \meanvec - \riskfreerate \onevec_n)$ in their preferences. Both the principal and the agent agree to choose portfolios $\portfolio$ that achieves a high mean wealth. However, the principal and the agent have different risk aversions. Let's assume no wealth effects for simplicity, so say $w_0 = 1$. Note that $\Erf^{-1} \le 0$ on $(-1, 0]$. Thus for conventional values of $\alpha$ (e.g.\ $0.05$), it is ensured that $\Erf^{-1}(2 \alpha - 1) < 0$. Rewriting as $\sqrt{2} \Erf^{-1}(2 \alpha - 1) \sqrt{\portfolio^\top \covmat \portfolio} = \frac{1}{2} \frac{2 \sqrt{2} \Erf^{-1}(2 \alpha - 1) }{ \sqrt{\portfolio^\top \covmat \portfolio} } \portfolio^\top \covmat \portfolio $, we can reinterpret the agent to have a risk aversion parameter of $2 \sqrt{2} \Erf^{-1}(2 \alpha - 1) / \sqrt{\portfolio^\top \covmat \portfolio}$ that simultaneously depends on the level $\alpha$ and also on the portfolio volatility $\sqrt{\portfolio^\top \covmat \portfolio}$. Thus, our setup here illustrates one of the core conflicts between the principal and the agent whereby they have strictly different risk preferences. Of course, without the constraint $v' \in \riskmeasureconstraints$, there will be no conflict between the principal and the agent.
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Literature review}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 Primary references: \cite{patton2019dynamic}, \cite{chen2016semiparametric}
 
 Secondary references: \cite{dimitriadis2019joint}

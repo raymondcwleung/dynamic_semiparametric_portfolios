@@ -24,16 +24,17 @@
 \newcommand{\normBIG}[1]{\left\vert\left\vert#1\right\vert\right\vert} %Big norm function
 \newcommand{\absBIG}[1]{\left|#1\right|} %Big absolute value function
 \newcommand{\diag}{\ensuremath{\mathrm{diag}}} % matrix diag operator  
-\newcommand{\ind}{\ensuremath\boldsymbol{1}} % indicator function 
-\newcommand{\indsmall}[1]{\ensuremath\boldsymbol{1}_{\{#1\}}} % small indicator function 
+\newcommand{\ind}{\ensuremath\mathbbm{1}} % indicator function 
+\newcommand{\indsmall}[1]{\ensuremath\mathbbm{1}_{\{#1\}}} % small indicator function 
 \newcommand{\weakcvgto}{\ensuremath\rightsquigarrow} % weak convergence arrow 
 \newcommand{\BigOhPee}{\ensuremath O_\mathrm{P}} % Big O in probability 
 \newcommand{\SmallOhPee}{\ensuremath o_\mathrm{P}} % Small o in probability 
 \newcommand{\BigOh}{O} % Big O notation 
 \newcommand{\SmallOh}{o} % Small O notation 
+\newcommand{\normaldist}{\mathcal{N}}
 
 % General functions 
-\newcommand{\Efr}{\ensuremath\mathsf{erf}} % error function 
+\newcommand{\Erf}{\ensuremath\mathrm{erf}} % error function 
 \newcommand{\Efrc}{\ensuremath\mathsf{efrc}} % complementary error function = 1 - erf 
 
 % Functional analysis 
@@ -45,8 +46,14 @@
 \newcommand{\vol}{\ensuremath\mathrm{vol}} % volume 
 
 % Calculus 
-\newcommand{\diff}[1]{\ensuremath\,\mathrm{d}#1} 
+\newcommand{\diff}[1]{\ensuremath\,\mathrm{d}#1}
 \newcommand{\Diff}{\ensuremath\mathrm{D}}
+
+% Optimization
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argsup}{arg\,sup}
+\DeclareMathOperator*{\arginf}{arg\,inf}
 
 % Change the real and imaginary parts operators
 \renewcommand{\Re}{\operatorname{Re}}
@@ -58,7 +65,27 @@
 % Symbols specific to this paper 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\VaR}{\ensuremath \mathrm{VaR}}
+
 \renewcommand{\vec}{\ensuremath \operatorname{vec}}
+
+\newcommand{\onevec}{\ensuremath \mathbf{1}}
+\newcommand{\meanvec}{\ensuremath \boldsymbol{\mu}}
+\newcommand{\covmat}{\ensuremath \boldsymbol{\Sigma}}
+
+\newcommand{\utility}{\ensuremath U}
+\newcommand{\numassets}{\ensuremath n}
+\newcommand{\returns}{\ensuremath \mathbf{Y}}
+\newcommand{\riskfreerate}{\ensuremath R^f}
+\newcommand{\portfolio}{\ensuremath \boldsymbol{\pi}}
+\newcommand{\portfoliospace}{\ensuremath \mathcal{P}}
+\newcommand{\wealth}{\ensuremath W}
+\newcommand{\riskloss}{\ensuremath L}
+\newcommand{\riskmeasure}{\ensuremath \mathbf{v}}
+\newcommand{\riskmeasurespace}{\ensuremath \mathrm{D}}
+\newcommand{\riskmeasureconstraints}{\ensuremath \mathcal{V}}
+\newcommand{\params}{\ensuremath \boldsymbol{\theta}}
 
 \newcommand{\xvec}{\ensuremath \mathbf{x}}
 \newcommand{\sxvec}{\ensuremath \mathrm{x}}
