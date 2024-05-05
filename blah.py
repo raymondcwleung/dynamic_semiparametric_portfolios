@@ -228,15 +228,15 @@ def calc_q0_t(vec_param, z_t_minus_one, q0_t_minus_one, q0_bar=0):
     return q_t_out
 
 
-def calc_sigma_gjr_garch(vec_param, sigma_t_minus_one, epsilon_t_minus_one):
+def calc_sigma_t(params, sigma_t_minus_one, epsilon_t_minus_one):
     """
     Glosten, Jagannathan and Runkle (1993)
 
     Return
     ------
-    Scalar-valued \sqrt{\sigma_{i,t}^2}
+    Scalar-valued \sqrt{\sigma_{i,t}^2} for asset i
     """
-    omega, beta, alpha, psi = vec_param
+    omega, beta, alpha, psi = params
 
     var_t = (
         omega
@@ -248,25 +248,27 @@ def calc_sigma_gjr_garch(vec_param, sigma_t_minus_one, epsilon_t_minus_one):
     return sigma_t
 
 
-def calc_q_t(mat_omega_bar, vec_delta, mat_q_t_minus_1, vec_u_t_minus_one):
+def calc_q_t(mat_omega_bar, params, mat_q_t_minus_1, vec_u_t_minus_one):
     """
     Return
     ------
     Matrix-valued Q_t
     """
+    delta0, delta1, delta2 = params
+
     # u_{t-1}u_{t-1}^\top
     uuT = jnp.outer(vec_u_t_minus_one, vec_u_t_minus_one)
 
-    vec_q_t_out = (
+    mat_q_t_out = (
         mat_omega_bar
-        + vec_delta[0] * mat_q_t_minus_1
-        + vec_delta[1] * uuT
-        + vec_delta[2] * uuT * _indicator(vec_u_t_minus_one)
+        + delta0 * mat_q_t_minus_1
+        + delta1 * uuT
+        + delta2 * uuT * jnp.prod(_indicator(vec_u_t_minus_one))
     )
-    return vec_q_t_out
+    return mat_q_t_out
 
 
-def calc_u_t(vec_sigma_t, vec_epsilon_t):
+def calc_vec_u_t(vec_sigma_t, vec_epsilon_t):
     """
     u_t = D_t^{-1} \epsilon_t, where D_t = diag(\sigma_{1,t}, \ldots, \sigma_{n,t}),
     so u_t = ( \epsilon_{1,t} / \sigma_{1,t}, \ldots, \epsilon_{n,t} / \sigma_{n,t} )
@@ -275,7 +277,8 @@ def calc_u_t(vec_sigma_t, vec_epsilon_t):
     ------
     Vector-valued u_t
     """
-    return vec_epsilon_t / vec_sigma_t
+    vec_u_t = vec_epsilon_t / vec_sigma_t
+    return vec_u_t
 
 
 def calc_mat_gamma_t(mat_q_t):
@@ -287,7 +290,7 @@ def calc_mat_gamma_t(mat_q_t):
     Matrix-valued \Gamma_t
     """
     # \diag(Q_t)^{-1/2} = diag( q_{1,1}^{-1/2}, \ldots, q_{n,n}^{-1/2} )
-    diag_q_t_negsqrt = jnp.diag(jnp.power(jnp.diag(mat_q_t), -1 / 2))
+    diag_q_t_negsqrt = jnp.diag(jnp.diag(mat_q_t) ** (-1 / 2))
 
     gamma_t_out = jnp.matmul(jnp.matmul(diag_q_t_negsqrt, mat_q_t), diag_q_t_negsqrt)
     return gamma_t_out
@@ -358,25 +361,38 @@ alpha = -0.25
 psi = 0.5
 sigma_t_minus_one = 0.1
 epsilon_t_minus_one = -0.33
-sigma_t = calc_sigma_gjr_garch(
-    omega=omega,
-    beta=beta,
-    alpha=alpha,
-    psi=psi,
-    sigma_t_minus_one=sigma_t_minus_one,
-    epsilon_t_minus_one=epsilon_t_minus_one,
+
+
+params = jnp.array(
+    [
+        [omega, beta, alpha, psi],
+        [omega * 1.01, beta * 0.95, alpha * 1.05, psi * 0.25],
+    ]
 )
 
-omega_bar = jnp.array([[1, 0], [0, 1]])
-delta = jnp.array([0.2, 0.3, 0.4])
-q_t_minus_1 = jnp.array([[0.1, 0.3], [0.3, 0.3]])
-u_t_minus_one = jnp.array([-0.1, 0.2])
-qt = calc_q_t(omega_bar, delta, q_t_minus_1, u_t_minus_one)
+calc_vec_sigma_t = jax.vmap(calc_sigma_t, in_axes=[0, 0, 0])
 
-vec_sigma_t = jnp.array([0.1, 0.2])
-calc_vec_epsilon_t = jnp.array([-0.3, 0.134])
-ut = calc_u_t(vec_sigma_t, calc_vec_epsilon_t)
+omega_bar = jnp.array([[np.sqrt(0.3), 0.1], [0.1, np.sqrt(0.5)]])
 
-mat_gamma = calc_mat_gamma_t(q_t_minus_1)
+vec_sigma_0 = jnp.array([np.sqrt(0.025), np.sqrt(0.055)])
+vec_epsilon_0 = jnp.array([-0.1, 0.1])
+mat_q_0 = jnp.array([[1, 0.3], [0.3, 1]])
 
-mat_sigma = calc_mat_sigma_t(vec_sigma_t, mat_gamma)
+params_q = jnp.array([0.1, 0.2, 0.3])
+
+
+vec_u_0 = calc_vec_u_t(vec_sigma_t=vec_sigma_0, vec_epsilon_t=vec_epsilon_0)
+
+vec_z_1 = jnp.array([0.02, -0.034])
+
+vec_sigma_1 = calc_vec_sigma_t(params, vec_sigma_0, vec_epsilon_0)
+vec_u_1 = calc_vec_u_t(vec_sigma_t=vec_sigma_1, vec_epsilon_t=vec_epsilon_0)
+mat_q_1 = calc_q_t(
+    mat_omega_bar=omega_bar,
+    params=params_q,
+    mat_q_t_minus_1=mat_q_0,
+    vec_u_t_minus_one=vec_u_0,
+)
+mat_gamma_1 = calc_mat_gamma_t(mat_q_t=mat_q_1)
+
+mat_sigma_1 = calc_mat_sigma_t(vec_sigma_t=vec_sigma_1, mat_gamma_t=mat_gamma_1)
