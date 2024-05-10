@@ -228,44 +228,53 @@ def calc_q0_t(vec_param, z_t_minus_one, q0_t_minus_one, q0_bar=0):
     return q_t_out
 
 
-def calc_sigma_t(params, sigma_t_minus_one, epsilon_t_minus_one):
+def calc_sigma_t(garch_params, sigma_t_minus_one, epsilon_t_minus_one):
     """
     Glosten, Jagannathan and Runkle (1993)
+
+    Parmeter labels
+    ---------------
+    omega = garch_params[0]
+    beta = garch_params[1]
+    alpha = garch_params[2]
+    psi = garch_params[3]
 
     Return
     ------
     Scalar-valued \sqrt{\sigma_{i,t}^2} for asset i
     """
-    omega, beta, alpha, psi = params
-
     var_t = (
-        omega
-        + beta * sigma_t_minus_one**2
-        + alpha * epsilon_t_minus_one**2
-        + psi * epsilon_t_minus_one**2 * _indicator(epsilon_t_minus_one)
+        garch_params[0]
+        + garch_params[1] * sigma_t_minus_one**2
+        + garch_params[2] * epsilon_t_minus_one**2
+        + garch_params[3] * epsilon_t_minus_one**2 * _indicator(epsilon_t_minus_one)
     )
     sigma_t = jnp.sqrt(var_t)
     return sigma_t
 
 
-def calc_q_t(mat_omega_bar, params, mat_q_t_minus_1, vec_u_t_minus_one):
+def calc_q_t(mat_q_bar, dcc_params, mat_q_t_minus_1, vec_u_t_minus_one):
     """
+    DCC specification of Engle (2002) and Engle and Sheppard (2001)
+
+    Parmeter labels
+    ---------------
+    delta_1 = dcc_params[0]
+    delta_2 = dcc_params[1]
+
     Return
     ------
     Matrix-valued Q_t
     """
-    delta0, delta1, delta2 = params
-
     # u_{t-1}u_{t-1}^\top
     uuT = jnp.outer(vec_u_t_minus_one, vec_u_t_minus_one)
 
-    mat_q_t_out = (
-        mat_omega_bar
-        + delta0 * mat_q_t_minus_1
-        + delta1 * uuT
-        + delta2 * uuT * jnp.prod(_indicator(vec_u_t_minus_one))
+    mat_q_t = (
+        (1 - dcc_params[0] - dcc_params[1]) * mat_q_bar
+        + dcc_params[0] * uuT
+        + dcc_params[1] * mat_q_t_minus_1
     )
-    return mat_q_t_out
+    return mat_q_t
 
 
 def calc_vec_u_t(vec_sigma_t, vec_epsilon_t):
@@ -338,61 +347,140 @@ def vec_z_t(mat_sigma_t, vec_epsilon_t):
     return z_t
 
 
-mu = 0
-sigma = 1
-lbda = 0
-p = 10
-q = 5
-zz = np.linspace(-10, 10, 1000)
-hi = sgt_density(zz, mu, sigma, lbda, p, q)
+# mu = 0
+# sigma = 1
+# lbda = 0
+# p = 10
+# q = 5
+# zz = np.linspace(-10, 10, 1000)
+# hi = sgt_density(zz, mu, sigma, lbda, p, q)
+#
+#
+# mu = jnp.array([0, 0])
+# sigma = jnp.array([1, 1])
+# lbda = jnp.array([0, 0])
+# p = jnp.array([10, 11])
+# q = jnp.array([5, 6])
+# zz = jnp.array([0.2, 0.3])
+# hihi = mvar_sgt_density(zz, mu, sigma, lbda, p, q)
 
 
-mu = jnp.array([0, 0])
-sigma = jnp.array([1, 1])
-lbda = jnp.array([0, 0])
-p = jnp.array([10, 11])
-q = jnp.array([5, 6])
-zz = jnp.array([0.2, 0.3])
-hihi = mvar_sgt_density(zz, mu, sigma, lbda, p, q)
+calc_vec_sigma_t = jax.vmap(calc_sigma_t, in_axes=(0, 0, 0))
 
-omega = 0.1
-beta = 0.5
-alpha = -0.25
-psi = 0.5
-sigma_t_minus_one = 0.1
-epsilon_t_minus_one = -0.33
+# Fake asset returns
+num_assets = 5
+num_time_obs = 1000
+key = random.key(51234)
+# N x T
+mat_rtn = jax.random.normal(key, (num_assets, num_time_obs))
 
 
-params = jnp.array(
-    [
-        [omega, beta, alpha, psi],
-        [omega * 1.01, beta * 0.95, alpha * 1.05, psi * 0.25],
-    ]
-)
+def _gen_garch_init_params(
+    num_assets: int,
+    key,
+    num_agarch_params: int = 4,
+):
+    """
+    Generate the initial random conditions to the
+    multivariate DCC model
+    """
 
-calc_vec_sigma_t = jax.vmap(calc_sigma_t, in_axes=[0, 0, 0])
+    # \sigma_{i, 0}
+    vec_sigma_0 = jax.random.uniform(key, (num_assets,)) / 2
 
-omega_bar = jnp.array([[np.sqrt(0.3), 0.1], [0.1, np.sqrt(0.5)]])
+    # (\varepsilon_{i,0})
+    vec_epsilon_0 = mat_rtn[:, 0] - vec_mu
 
-vec_sigma_0 = jnp.array([np.sqrt(0.025), np.sqrt(0.055)])
-vec_epsilon_0 = jnp.array([-0.1, 0.1])
-mat_q_0 = jnp.array([[1, 0.3], [0.3, 1]])
+    # (u_{i,0})
+    vec_u_0 = calc_vec_u_t(vec_sigma_t=vec_sigma_0, vec_epsilon_t=vec_epsilon_0)
 
-params_q = jnp.array([0.1, 0.2, 0.3])
+    return (
+        vec_sigma_0,
+        vec_epsilon_0,
+        vec_u_0,
+    )
 
 
-vec_u_0 = calc_vec_u_t(vec_sigma_t=vec_sigma_0, vec_epsilon_t=vec_epsilon_0)
+############################
+# Parameters
+############################
+key = random.key(1234)
 
-vec_z_1 = jnp.array([0.02, -0.034])
+# Constant mean vector
+key, subkey = random.split(key)
+vec_mu = jax.random.uniform(subkey, (num_assets,)) / 2
 
-vec_sigma_1 = calc_vec_sigma_t(params, vec_sigma_0, vec_epsilon_0)
-vec_u_1 = calc_vec_u_t(vec_sigma_t=vec_sigma_1, vec_epsilon_t=vec_epsilon_0)
-mat_q_1 = calc_q_t(
-    mat_omega_bar=omega_bar,
-    params=params_q,
-    mat_q_t_minus_1=mat_q_0,
-    vec_u_t_minus_one=vec_u_0,
-)
-mat_gamma_1 = calc_mat_gamma_t(mat_q_t=mat_q_1)
+# Parameters of the univariate asymmetric GARCH models of Glosten, Jagannathan
+# and Runkle (1993). All these parameters are strictly positive.
+# [\omega_i, \beta_i, \alpha_i, \psi_i]
+num_agarch_params: int = 4
+key, subkey = random.split(key)
+garch_params = jax.random.uniform(subkey, (num_assets, num_agarch_params))
 
-mat_sigma_1 = calc_mat_sigma_t(vec_sigma_t=vec_sigma_1, mat_gamma_t=mat_gamma_1)
+# Parameters of the asymmetric DCC model of Engle.
+# [\delta_1, \delta_2]
+key, subkey = random.split(key)
+_ = jax.random.uniform(subkey, (2,))
+dcc_params = _ / (2 * jnp.linalg.norm(_, 1))
+
+# \bar{Q}
+_ = jax.random.uniform(key, (num_assets, num_assets)) / 2
+mat_q_bar = jnp.dot(_, _.transpose())
+
+# Q_0
+_ = jax.random.uniform(key, (num_assets, num_assets)) / 2
+mat_q_0 = jnp.dot(_, _.transpose())
+
+
+############################
+## Initial conditions t = 0
+############################
+(
+    vec_sigma_0,
+    vec_epsilon_0,
+    vec_u_0,
+) = _gen_garch_init_params(num_assets=num_assets, key=key)
+
+
+vec_sigma_t_minus_1 = vec_sigma_0
+vec_epsilon_t_minus_1 = vec_epsilon_0
+vec_u_t_minus_one = vec_u_0
+
+mat_q_t_minus_1 = mat_q_0
+
+# # (z_{i,t})
+# vec_z_t = mat_rtn[:, tt] - vec_mu
+
+tt = 1
+
+for tt in np.arange(1, 5):
+    # (\sigma_{i,t})
+    vec_sigma_t = calc_vec_sigma_t(
+        garch_params,
+        vec_sigma_t_minus_1,
+        vec_epsilon_t_minus_1,
+    )
+
+    # (u_{i,t})
+    vec_u_t = calc_vec_u_t(vec_sigma_t=vec_sigma_t, vec_epsilon_t=vec_epsilon_0)
+
+    # Q_t
+    mat_q_t = calc_q_t(
+        mat_q_bar=mat_q_bar,
+        dcc_params=dcc_params,
+        mat_q_t_minus_1=mat_q_t_minus_1,
+        vec_u_t_minus_one=vec_u_t_minus_one,
+    )
+    # \Gamma_t
+    mat_gamma_t = calc_mat_gamma_t(mat_q_t=mat_q_t)
+
+    # \Sigma_1
+    mat_sigma_t = calc_mat_sigma_t(vec_sigma_t=vec_sigma_t, mat_gamma_t=mat_gamma_t)
+
+    # z_t = \Sigma_t^{-1/2} (R_t - \mu)
+    #
+    # jscipy.linalg.solve
+
+    # Update time steps
+
+breakpoint()
