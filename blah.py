@@ -330,7 +330,7 @@ def calc_vec_epsilon_t(vec_rtn_t, vec_mu_t):
     return vec_rtn_t - vec_mu_t
 
 
-def vec_z_t(mat_sigma_t, vec_epsilon_t):
+def calc_vec_z_t(mat_sigma_t, vec_epsilon_t):
     """
     z_t = \Sigma_t^{-1/2} \epsilon_t = \Sigma_t^{-1/2} (R_t - \mu_t)
 
@@ -338,8 +338,11 @@ def vec_z_t(mat_sigma_t, vec_epsilon_t):
     ------
     Vector-valued z_t
     """
-    # Compute \Sigma_t^{1/2}
-    mat_sigma_sqrt = jscipy.linalg.sqrtm(A=mat_sigma_t)
+    # Compute \Sigma_t^{1/2} via spectral theorem
+    eigvals, eigvecs = jnp.linalg.eigh(mat_sigma_t)
+    sqrt_eigvals = jnp.sqrt(eigvals)
+    mat_sqrt_diag = jnp.diag(sqrt_eigvals)
+    mat_sigma_sqrt = jnp.matmul(jnp.matmul(eigvecs, mat_sqrt_diag), eigvecs.transpose())
 
     # Solve Ax = b. In our case, A = \Sigma_t^{1/2} and b = \epsilon_t. The solution x is z_t.
     z_t = jscipy.linalg.solve(a=mat_sigma_sqrt, b=vec_epsilon_t)
@@ -451,7 +454,6 @@ mat_q_t_minus_1 = mat_q_0
 # # (z_{i,t})
 # vec_z_t = mat_rtn[:, tt] - vec_mu
 
-tt = 1
 
 for tt in np.arange(1, 5):
     # (\sigma_{i,t})
@@ -477,9 +479,10 @@ for tt in np.arange(1, 5):
     # \Sigma_1
     mat_sigma_t = calc_mat_sigma_t(vec_sigma_t=vec_sigma_t, mat_gamma_t=mat_gamma_t)
 
-    # z_t = \Sigma_t^{-1/2} (R_t - \mu)
-    #
-    # jscipy.linalg.solve
+    # z_t = \Sigma_t^{-1/2} \varepsilon_t,
+    # where \varepsilon_t = R_t - \mu
+    vec_epsilon_t = mat_rtn[:, tt] - vec_mu
+    z_t = calc_vec_z_t(mat_sigma_t=mat_sigma_t, vec_epsilon_t=vec_epsilon_t)
 
     # Update time steps
 
