@@ -34,7 +34,6 @@ def loss_fn(theta, x, y):
     return jnp.mean((prediction - y) ** 2)
 
 
-@jit
 def update(theta, x, y, lr=0.1):
     return theta - lr * jax.grad(loss_fn)(theta, x, y)
 
@@ -61,7 +60,14 @@ def mu_t(rtn_t, mu_bar=0):
     return mu_bar
 
 
-def sgt_density(z, mu, sigma, lbda, p0, q0):
+def _sgt_density(z, lbda, p0, q0):
+    """
+    SGT density (with zero mean and unit variance)
+    """
+    # Hard coded
+    mu = 0
+    sigma = 1
+
     v = jnp.power(q0, -1 / p0) / jnp.sqrt(
         (1 + 3 * lbda**2)
         * jscipy.special.beta(3 / p0, q0 - 2 / p0)
@@ -102,19 +108,16 @@ def sgt_density(z, mu, sigma, lbda, p0, q0):
     return density
 
 
-@jit
-def mvar_sgt_density(vec_z, vec_mu, vec_sigma, vec_lbda, vec_p0, vec_q0):
+def mvar_sgt_density(vec_z, vec_params_lbda, vec_params_p0, vec_params_q0):
     n = len(vec_z)
 
     density = 1
     for ii in jnp.arange(n):
-        d_ = sgt_density(
+        d_ = _sgt_density(
             z=vec_z[ii],
-            mu=vec_mu[ii],
-            sigma=vec_sigma[ii],
-            lbda=vec_lbda[ii],
-            p0=vec_p0[ii],
-            q0=vec_q0[ii],
+            lbda=vec_params_lbda[ii],
+            p0=vec_params_p0[ii],
+            q0=vec_params_q0[ii],
         )
         density *= d_
 
@@ -397,17 +400,22 @@ def _gen_garch_init_params(
     # (u_{i,0})
     vec_u_0 = calc_vec_u_t(vec_sigma_t=vec_sigma_0, vec_epsilon_t=vec_epsilon_0)
 
-    return (
-        vec_sigma_0,
-        vec_epsilon_0,
-        vec_u_0,
-    )
+    # Q_0
+    _ = jax.random.uniform(key, (num_assets, num_assets)) / 2
+    mat_q_0 = jnp.dot(_, _.transpose())
+
+    return (vec_sigma_0, vec_epsilon_0, vec_u_0, mat_q_0)
 
 
 ############################
 # Parameters
 ############################
 key = random.key(1234)
+
+# Parameters of the g(.) SGT density
+vec_params_lbda = jnp.array([0, 0, 0, 0, 0])
+vec_params_p0 = jnp.array([1, 1, 1, 1, 1])
+vec_params_q0 = jnp.array([1.1, 1.1, 1.1, 1.1, 1.1])
 
 # Constant mean vector
 key, subkey = random.split(key)
@@ -430,32 +438,39 @@ dcc_params = _ / (2 * jnp.linalg.norm(_, 1))
 _ = jax.random.uniform(key, (num_assets, num_assets)) / 2
 mat_q_bar = jnp.dot(_, _.transpose())
 
-# Q_0
-_ = jax.random.uniform(key, (num_assets, num_assets)) / 2
-mat_q_0 = jnp.dot(_, _.transpose())
-
-
-############################
-## Initial conditions t = 0
-############################
-(
-    vec_sigma_0,
-    vec_epsilon_0,
-    vec_u_0,
-) = _gen_garch_init_params(num_assets=num_assets, key=key)
-
-
-vec_sigma_t_minus_1 = vec_sigma_0
-vec_epsilon_t_minus_1 = vec_epsilon_0
-vec_u_t_minus_one = vec_u_0
-
-mat_q_t_minus_1 = mat_q_0
 
 # # (z_{i,t})
 # vec_z_t = mat_rtn[:, tt] - vec_mu
+#
 
 
-for tt in np.arange(1, 5):
+@jit
+def _calc_log_likelihood_t(
+    # Asset returns
+    tt,
+    mat_rtn,
+    # t - 1 terms,
+    vec_sigma_t_minus_1,
+    vec_epsilon_t_minus_1,
+    vec_u_t_minus_one,
+    mat_q_t_minus_1,
+    # Univar vol params
+    vec_mu,
+    garch_params,
+    # Multivar cov params
+    mat_q_bar,
+    dcc_params,
+    # SGT density params
+    vec_params_lbda,
+    vec_params_p0,
+    vec_params_q0,
+):
+    """
+    Calculate the t-th summand of the log-likelihood function
+    """
+    #############################################
+    ## STEP 1: Construct univariate vol
+    #############################################
     # (\sigma_{i,t})
     vec_sigma_t = calc_vec_sigma_t(
         garch_params,
@@ -463,9 +478,15 @@ for tt in np.arange(1, 5):
         vec_epsilon_t_minus_1,
     )
 
-    # (u_{i,t})
-    vec_u_t = calc_vec_u_t(vec_sigma_t=vec_sigma_t, vec_epsilon_t=vec_epsilon_0)
+    # (\varepsilon_{i,t})
+    vec_epsilon_t = mat_rtn[:, tt] - vec_mu
 
+    # (u_{i,t})
+    vec_u_t = calc_vec_u_t(vec_sigma_t=vec_sigma_t, vec_epsilon_t=vec_epsilon_t)
+
+    ###################################################
+    ## STEP 2: Construct multivariate covariance matrix
+    ###################################################
     # Q_t
     mat_q_t = calc_q_t(
         mat_q_bar=mat_q_bar,
@@ -476,14 +497,107 @@ for tt in np.arange(1, 5):
     # \Gamma_t
     mat_gamma_t = calc_mat_gamma_t(mat_q_t=mat_q_t)
 
-    # \Sigma_1
+    # \Sigma_t
     mat_sigma_t = calc_mat_sigma_t(vec_sigma_t=vec_sigma_t, mat_gamma_t=mat_gamma_t)
 
+    ###################################################
+    ## STEP 3: Construct t-th summand of log-likelihood
+    ###################################################
     # z_t = \Sigma_t^{-1/2} \varepsilon_t,
     # where \varepsilon_t = R_t - \mu
-    vec_epsilon_t = mat_rtn[:, tt] - vec_mu
-    z_t = calc_vec_z_t(mat_sigma_t=mat_sigma_t, vec_epsilon_t=vec_epsilon_t)
+    vec_z_t = calc_vec_z_t(mat_sigma_t=mat_sigma_t, vec_epsilon_t=vec_epsilon_t)
 
-    # Update time steps
+    # \log g(z_t)
+    log_density_t = jnp.log(
+        mvar_sgt_density(vec_z_t, vec_params_lbda, vec_params_p0, vec_params_q0)
+    )
 
-breakpoint()
+    # \log\det(\Sigma_t)
+    log_det_sigma_t = jnp.log(jnp.linalg.det(mat_sigma_t))
+
+    # Log-likelihood L(R_t) at time t
+    log_lik_t = log_density_t - 0.5 * log_det_sigma_t
+
+    ###################################################
+    ## STEP 4: Output
+    ###################################################
+    return log_lik_t, vec_sigma_t, vec_epsilon_t, vec_u_t
+
+
+def calc_log_likelihood(
+    # Asset returns
+    mat_rtn,
+    # Univar vol params
+    vec_mu,
+    garch_params,
+    # Multivar cov params
+    mat_q_bar,
+    dcc_params,
+    # SGT density params
+    vec_params_lbda,
+    vec_params_p0,
+    vec_params_q0,
+    # Hyper params
+    key=random.key(1234),
+):
+    """
+    Calculate the log-likelihood fucntion
+    """
+    num_assets = mat_rtn.shape[0]
+    num_time_obs = mat_rtn.shape[1]
+
+    # Initial conditions t = 0
+    (vec_sigma_0, vec_epsilon_0, vec_u_0, mat_q_0) = _gen_garch_init_params(
+        num_assets=num_assets, key=key
+    )
+
+    vec_sigma_t_minus_1 = vec_sigma_0
+    vec_epsilon_t_minus_1 = vec_epsilon_0
+    vec_u_t_minus_one = vec_u_0
+    mat_q_t_minus_1 = mat_q_0
+
+    log_lik = 0
+    for tt in range(1, num_time_obs):
+        # Calculate the t-th summand of the log-likelihood
+        log_lik_t, vec_sigma_t, vec_epsilon_t, vec_u_t = _calc_log_likelihood_t(
+            tt=tt,
+            mat_rtn=mat_rtn,
+            #
+            vec_sigma_t_minus_1=vec_sigma_t_minus_1,
+            vec_epsilon_t_minus_1=vec_epsilon_t_minus_1,
+            vec_u_t_minus_one=vec_u_t_minus_one,
+            mat_q_t_minus_1=mat_q_t_minus_1,
+            #
+            vec_mu=vec_mu,
+            garch_params=garch_params,
+            #
+            mat_q_bar=mat_q_bar,
+            dcc_params=dcc_params,
+            #
+            vec_params_lbda=vec_params_lbda,
+            vec_params_p0=vec_params_p0,
+            vec_params_q0=vec_params_q0,
+        )
+
+        # Update
+        log_lik += log_lik_t
+        vec_sigma_t_minus_1 = vec_sigma_t
+        vec_epsilon_t_minus_1 = vec_epsilon_t
+        vec_u_t_minus_one = vec_u_t
+
+    return log_lik
+
+
+log_lik = calc_log_likelihood(
+    mat_rtn=mat_rtn,
+    #
+    vec_mu=vec_mu,
+    garch_params=garch_params,
+    #
+    mat_q_bar=mat_q_bar,
+    dcc_params=dcc_params,
+    #
+    vec_params_lbda=vec_params_lbda,
+    vec_params_p0=vec_params_p0,
+    vec_params_q0=vec_params_q0,
+)
