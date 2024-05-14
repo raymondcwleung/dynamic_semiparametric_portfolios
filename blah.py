@@ -1,12 +1,14 @@
 import jax.numpy as jnp
 import jax.scipy as jscipy
-
 from jax import grad, jit, vmap
 from jax import random
 import jax
 
 import numpy as np
+import scipy
 import matplotlib.pyplot as plt
+
+import time
 
 
 key = random.key(0)
@@ -60,55 +62,106 @@ def mu_t(rtn_t, mu_bar=0):
     return mu_bar
 
 
-def _sgt_density(z, lbda, p0, q0):
+def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
     """
-    SGT density (with zero mean and unit variance)
+    SGT density
     """
-    # Hard coded
-    mu = 0
-    sigma = 1
+    power = jnp.power
+    sqrt = jnp.sqrt
+    sign = jnp.sign
+    abs = jnp.abs
+    beta = jscipy.special.beta
 
-    v = jnp.power(q0, -1 / p0) / jnp.sqrt(
-        (1 + 3 * lbda**2)
-        * jscipy.special.beta(3 / p0, q0 - 2 / p0)
-        / jscipy.special.beta(1 / p0, q0)
-        - 4
-        * lbda**2
-        * jscipy.special.beta(2 / p0, q0 - 1 / p0) ** 2
-        / jscipy.special.beta(1 / p0, q0) ** 2
+    v = power(q0, -1 / p0) / sqrt(
+        (1 + 3 * lbda**2) * beta(3 / p0, q0 - 2 / p0) / beta(1 / p0, q0)
+        - 4 * lbda**2 * beta(2 / p0, q0 - 1 / p0) ** 2 / beta(1 / p0, q0) ** 2
     )
-
     m = (
         lbda
-        * v
         * sigma
         * 2
-        * jnp.power(q0, 1 / p0)
-        * jscipy.special.beta(2 / p0, q0 - 1 / p0)
-        / jscipy.special.beta(1 / p0, q0)
+        * power(q0, 1 / p0)
+        * beta(2 / p0, q0 - 1 / p0)
+        / beta(1 / p0, q0)
     )
+
+    if var_adj:
+        sigma = sigma / v
+
+    if mean_cent:
+        z = z + m
 
     density = p0 / (
         2
         * v
         * sigma
-        * jnp.power(q0, 1 / p0)
-        * jscipy.special.beta(1 / p0, q0)
-        * jnp.power(
+        * power(q0, 1 / p0)
+        * beta(1 / p0, q0)
+        * power(
             1
-            + jnp.power(jnp.abs(z - mu + m), p0)
-            / (
-                q0
-                * jnp.power(v * sigma, p0)
-                * jnp.power(1 + lbda * jnp.sign(z - mu + m), p0)
-            ),
+            + power(abs(z - mu + m), p0)
+            / (q0 * power(v * sigma, p0) * power(1 + lbda * sign(z - mu + m), p0)),
             1 / p0 + q0,
         )
     )
     return density
 
 
-def mvar_sgt_density(vec_z, vec_params_lbda, vec_params_p0, vec_params_q0):
+def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
+    """
+    SGT quantile
+    """
+    power = jnp.power
+    sqrt = jnp.sqrt
+    beta = jscipy.special.beta
+    beta_quantile = scipy.stats.beta.ppf
+
+    v = power(q0, -1 / p0) / sqrt(
+        (1 + 3 * lbda**2) * beta(3 / p0, q0 - 2 / p0) / beta(1 / p0, q0)
+        - 4 * lbda**2 * beta(2 / p0, q0 - 1 / p0) ** 2 / beta(1 / p0, q0) ** 2
+    )
+    m = (
+        lbda
+        * sigma
+        * 2
+        * power(q0, 1 / p0)
+        * beta(2 / p0, q0 - 1 / p0)
+        / beta(1 / p0, q0)
+    )
+
+    if var_adj:
+        sigma = sigma / v
+
+    lam = lbda
+
+    flip = prob > (1 - lbda) / 2
+    if flip:
+        prob = 1 - prob
+        lam = -1 * lam
+
+    out = (
+        sigma
+        * (lam - 1)
+        * (
+            1 / (q0 * beta_quantile(q=1 - 2 * prob / (1 - lam), a=1 / p0, b=q0))
+            - 1 / q0
+        )
+        ** (-1 / p0)
+    )
+    if flip:
+        out = -out
+
+    out = out + mu
+
+    if mean_cent:
+        out = out - m
+
+    return out
+
+
+def mvar_sgt_density(
+    vec_z, vec_params_lbda, vec_params_p0, vec_params_q0, mean_cent=True, var_adj=True
+):
     n = len(vec_z)
 
     density = 1
@@ -118,6 +171,8 @@ def mvar_sgt_density(vec_z, vec_params_lbda, vec_params_p0, vec_params_q0):
             lbda=vec_params_lbda[ii],
             p0=vec_params_p0[ii],
             q0=vec_params_q0[ii],
+            mean_cent=mean_cent,
+            var_adj=var_adj,
         )
         density *= d_
 
@@ -381,18 +436,13 @@ key = random.key(51234)
 mat_rtn = jax.random.normal(key, (num_assets, num_time_obs))
 
 
-def _gen_garch_init_params(
-    num_assets: int,
-    key,
-    num_agarch_params: int = 4,
-):
+def _gen_garch_init_params(mat_rtn):
     """
     Generate the initial random conditions to the
     multivariate DCC model
     """
-
     # \sigma_{i, 0}
-    vec_sigma_0 = jax.random.uniform(key, (num_assets,)) / 2
+    vec_sigma_0 = mat_rtn.std(axis=1)
 
     # (\varepsilon_{i,0})
     vec_epsilon_0 = mat_rtn[:, 0] - vec_mu
@@ -401,42 +451,9 @@ def _gen_garch_init_params(
     vec_u_0 = calc_vec_u_t(vec_sigma_t=vec_sigma_0, vec_epsilon_t=vec_epsilon_0)
 
     # Q_0
-    _ = jax.random.uniform(key, (num_assets, num_assets)) / 2
-    mat_q_0 = jnp.dot(_, _.transpose())
+    mat_q_0 = jnp.cov(mat_rtn)
 
     return (vec_sigma_0, vec_epsilon_0, vec_u_0, mat_q_0)
-
-
-############################
-# Parameters
-############################
-key = random.key(1234)
-
-# Parameters of the g(.) SGT density
-vec_params_lbda = jnp.array([0, 0, 0, 0, 0])
-vec_params_p0 = jnp.array([1, 1, 1, 1, 1])
-vec_params_q0 = jnp.array([1.1, 1.1, 1.1, 1.1, 1.1])
-
-# Constant mean vector
-key, subkey = random.split(key)
-vec_mu = jax.random.uniform(subkey, (num_assets,)) / 2
-
-# Parameters of the univariate asymmetric GARCH models of Glosten, Jagannathan
-# and Runkle (1993). All these parameters are strictly positive.
-# [\omega_i, \beta_i, \alpha_i, \psi_i]
-num_agarch_params: int = 4
-key, subkey = random.split(key)
-garch_params = jax.random.uniform(subkey, (num_assets, num_agarch_params))
-
-# Parameters of the asymmetric DCC model of Engle.
-# [\delta_1, \delta_2]
-key, subkey = random.split(key)
-_ = jax.random.uniform(subkey, (2,))
-dcc_params = _ / (2 * jnp.linalg.norm(_, 1))
-
-# \bar{Q}
-_ = jax.random.uniform(key, (num_assets, num_assets)) / 2
-mat_q_bar = jnp.dot(_, _.transpose())
 
 
 # # (z_{i,t})
@@ -537,26 +554,21 @@ def calc_log_likelihood(
     vec_params_lbda,
     vec_params_p0,
     vec_params_q0,
-    # Hyper params
-    key=random.key(1234),
 ):
     """
     Calculate the log-likelihood fucntion
     """
-    num_assets = mat_rtn.shape[0]
-    num_time_obs = mat_rtn.shape[1]
-
     # Initial conditions t = 0
     (vec_sigma_0, vec_epsilon_0, vec_u_0, mat_q_0) = _gen_garch_init_params(
-        num_assets=num_assets, key=key
+        mat_rtn=mat_rtn
     )
-
     vec_sigma_t_minus_1 = vec_sigma_0
     vec_epsilon_t_minus_1 = vec_epsilon_0
     vec_u_t_minus_one = vec_u_0
     mat_q_t_minus_1 = mat_q_0
 
     log_lik = 0
+    num_time_obs = mat_rtn.shape[1]
     for tt in range(1, num_time_obs):
         # Calculate the t-th summand of the log-likelihood
         log_lik_t, vec_sigma_t, vec_epsilon_t, vec_u_t = _calc_log_likelihood_t(
@@ -588,16 +600,59 @@ def calc_log_likelihood(
     return log_lik
 
 
-log_lik = calc_log_likelihood(
-    mat_rtn=mat_rtn,
-    #
-    vec_mu=vec_mu,
-    garch_params=garch_params,
-    #
-    mat_q_bar=mat_q_bar,
-    dcc_params=dcc_params,
-    #
-    vec_params_lbda=vec_params_lbda,
-    vec_params_p0=vec_params_p0,
-    vec_params_q0=vec_params_q0,
-)
+# t0 = time.time()
+# log_lik = calc_log_likelihood(
+#     mat_rtn=mat_rtn,
+#     #
+#     vec_mu=vec_mu,
+#     garch_params=garch_params,
+#     #
+#     mat_q_bar=mat_q_bar,
+#     dcc_params=dcc_params,
+#     #
+#     vec_params_lbda=vec_params_lbda,
+#     vec_params_p0=vec_params_p0,
+#     vec_params_q0=vec_params_q0,
+# )
+# t1 = time.time()
+#
+# print(f"Total time {t1 - t0}")
+
+
+############################
+## Simulate
+############################
+
+############################
+# Parameters
+############################
+key = random.key(1234)
+
+# Parameters of the g(.) SGT density
+vec_params_lbda = jnp.array([0, 0, 0, 0, 0])
+vec_params_p0 = jnp.array([1, 1, 1, 1, 1])
+vec_params_q0 = jnp.array([1.1, 1.1, 1.1, 1.1, 1.1])
+
+# Constant mean vector
+key, subkey = random.split(key)
+vec_mu = jax.random.uniform(subkey, (num_assets,)) / 2
+
+# Parameters of the univariate asymmetric GARCH models of Glosten, Jagannathan
+# and Runkle (1993). All these parameters are strictly positive.
+# [\omega_i, \beta_i, \alpha_i, \psi_i]
+num_agarch_params: int = 4
+key, subkey = random.split(key)
+garch_params = jax.random.uniform(subkey, (num_assets, num_agarch_params))
+
+# Parameters of the asymmetric DCC model of Engle.
+# [\delta_1, \delta_2]
+key, subkey = random.split(key)
+_ = jax.random.uniform(subkey, (2,))
+dcc_params = _ / (2 * jnp.linalg.norm(_, 1))
+
+# \bar{Q}
+_ = jax.random.uniform(key, (num_assets, num_assets)) / 2
+mat_q_bar = jnp.dot(_, _.transpose())
+
+
+# Simulate (z_{i,t})
