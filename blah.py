@@ -4,12 +4,18 @@ from jax import grad, jit, vmap
 from jax import random
 import jax
 
+import optax
+
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 
+
 import time
 
+
+# HACK:
+jax.config.update("jax_default_device", jax.devices("cpu")[0])
 
 key = random.key(0)
 
@@ -86,14 +92,13 @@ def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
     )
 
     if var_adj:
-        sigma = sigma / v
+        sigma = sigma * v
 
     if mean_cent:
         z = z + m
 
     density = p0 / (
         2
-        * v
         * sigma
         * power(q0, 1 / p0)
         * beta(1 / p0, q0)
@@ -105,6 +110,24 @@ def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
         )
     )
     return density
+
+
+def log_sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
+    """
+    Log of SGT density
+    """
+    return jnp.log(
+        _sgt_density(
+            z=z,
+            lbda=lbda,
+            p0=p0,
+            q0=q0,
+            mu=mu,
+            sigma=sigma,
+            mean_cent=mean_cent,
+            var_adj=var_adj,
+        )
+    )
 
 
 def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
@@ -130,7 +153,7 @@ def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=Tru
     )
 
     if var_adj:
-        sigma = sigma / v
+        sigma = sigma * v
 
     lam = lbda
 
@@ -190,14 +213,14 @@ def _positive_part(x):
     """
     Positive part of a scalar x^{+} := \max\{ x, 0 \}
     """
-    return jnp.max(x, 0)
+    return jnp.maximum(x, 0)
 
 
 def _negative_part(x):
     """
-    Negative part of a scalar x^{-} := \max\{ -x, 0 \}
+    Negative part of a scalar x^{-} := \max\{ -x, 0 \} = -min\{ x, 0 \}
     """
-    return jnp.max(-x, 0)
+    return -1 * jnp.minimum(x, 0)
 
 
 def calc_lbda_t(vec_param, z_t_minus_one, lbda_t_minus_one, lbda_bar=4):
@@ -430,7 +453,7 @@ calc_vec_sigma_t = jax.vmap(calc_sigma_t, in_axes=(0, 0, 0))
 
 # Fake asset returns
 num_assets = 5
-num_time_obs = 1000
+num_time_obs = 100
 key = random.key(51234)
 # N x T
 mat_rtn = jax.random.normal(key, (num_assets, num_time_obs))
@@ -626,12 +649,12 @@ def calc_log_likelihood(
 ############################
 # Parameters
 ############################
-key = random.key(1234)
+key = random.key(123456)
 
 # Parameters of the g(.) SGT density
 vec_params_lbda = jnp.array([0, 0, 0, 0, 0])
-vec_params_p0 = jnp.array([1, 1, 1, 1, 1])
-vec_params_q0 = jnp.array([1.1, 1.1, 1.1, 1.1, 1.1])
+vec_params_p0 = jnp.array([2, 2, 2, 2, 0.1])
+vec_params_q0 = jnp.array([100, 1.1, 1.1, 1.1, 1.1])
 
 # Constant mean vector
 key, subkey = random.split(key)
@@ -656,3 +679,126 @@ mat_q_bar = jnp.dot(_, _.transpose())
 
 
 # Simulate (z_{i,t})
+
+# Make params
+key, subkey = random.split(key)
+vec_lbda = 2 * jax.random.uniform(key, (num_assets, 1)) - 1
+
+key, subkey = random.split(key)
+vec_p0 = 5 * (jax.random.uniform(key, (num_assets, 1)))
+
+key, subkey = random.split(key)
+vec_q0 = 100 * jax.random.uniform(key, (num_assets, 1)) + 1
+
+key, subkey = random.split(key)
+lst_uniforms = jax.random.uniform(key, (num_assets, num_time_obs))
+
+# sim_sgt_z = vmap(_sgt_quantile, in_axes=(0, 0, 0, 0))
+# blah = sim_sgt_z(lst_uniforms, vec_lbda, vec_p0, vec_q0)
+
+sim_z_t = [
+    [
+        _sgt_quantile(
+            prob=p,
+            lbda=vec_lbda[asset],
+            p0=vec_p0[asset],
+            q0=vec_q0[asset],
+        )
+        for p in lst_uniforms[asset, :]
+    ]
+    for asset in np.arange(num_assets)
+]
+sim_z_t = jnp.array(sim_z_t)
+sim_z_t = sim_z_t.reshape(num_assets, num_time_obs)
+
+
+def sgt_score(vec_z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
+    pass
+
+
+# Score
+sgt_score = jax.grad(log_sgt_density, argnums=(1, 2, 3))
+
+blah = jax.grad(log_sgt_density, argnums=(1, 2, 3))
+
+gummy = blah(sim_z_t[0, 0], 0.1, 2.0, 100.0)
+
+
+map_sgt_density = vmap(_sgt_density, in_axes=(0, 0, 0, 0))
+
+hi = map_sgt_density(
+    sim_z_t[0, :],
+    jnp.repeat(0.1, num_time_obs),
+    jnp.repeat(2, num_time_obs),
+    jnp.repeat(100, num_time_obs),
+)
+
+_sgt_density(sim_z_t[0, :], 0.1, 2, 100)
+
+breakpoint()
+
+sgt_score(0.1, 1.0, 2.0, 3.0)
+
+
+vec_z_0 = jnp.array(vec_z_0)
+vec_z_t_minus_one = vec_z_0
+
+
+# Initial conditions
+lbda_0 = 0
+p0_0 = 2
+q0_0 = 100
+
+
+# Simulate (z_{i,0}) for t = 0
+key, subkey = random.split(key)
+lst_uniforms = jax.random.uniform(key, (num_assets,))
+vec_z_0 = [
+    _sgt_quantile(
+        prob=p,
+        lbda=lbda_0,
+        p0=p0_0,
+        q0=q0_0,
+    )
+    for p in lst_uniforms
+]
+vec_z_0 = jnp.array(vec_z_0)
+vec_z_t_minus_one = vec_z_0
+
+key, subkey = random.split(key)
+lbda_params = 2 * jax.random.uniform(key, (num_assets, 3)) - 1
+
+key, subkey = random.split(key)
+p0_params = 2 * jax.random.uniform(key, (num_assets, 3)) - 1
+
+key, subkey = random.split(key)
+q0_params = 2 * jax.random.uniform(key, (num_assets, 3)) - 1
+
+asset = 0
+hi = calc_lbda_t(
+    vec_param=lbda_params[asset, :],
+    z_t_minus_one=vec_z_t_minus_one[asset],
+    lbda_t_minus_one=10,
+)
+
+
+# lst_uniforms = jax.random.uniform(key, (num_assets, num_time_obs))
+# lst_z = []
+# for asset in np.arange(num_assets):
+#     z_ = [
+#         _sgt_quantile(
+#             prob=p,
+#             lbda=vec_params_lbda[asset],
+#             p0=vec_params_p0[asset],
+#             q0=vec_params_q0[asset],
+#         )
+#         for p in lst_uniforms[asset, :]
+#     ]
+#     z_ = np.array(z_)
+#     lst_z.append(z_)
+#
+# lst_z = jnp.array(lst_z)
+#
+# # Simulate (\varepsilon_{i,t})
+
+breakpoint()
