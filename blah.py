@@ -1,10 +1,14 @@
 import jax.numpy as jnp
 import jax.scipy as jscipy
+import jax.scipy.optimize
 from jax import grad, jit, vmap
 from jax import random
 import jax
+import jax.test_util
 
-import optax
+
+# import optax
+import jaxopt
 
 import numpy as np
 import scipy
@@ -16,6 +20,8 @@ import time
 
 # HACK:
 jax.config.update("jax_default_device", jax.devices("cpu")[0])
+jax.config.update("jax_enable_x64", True)
+
 
 key = random.key(0)
 
@@ -68,7 +74,88 @@ def mu_t(rtn_t, mu_bar=0):
     return mu_bar
 
 
-def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
+def _ges_t_mean(mu, sigma, p, q, lbda):
+    """
+    If X \sim GES-t(\mu, \sigam^2, p, q, \lambda), then return its first moment
+    \E[X]
+    """
+    gamma = jscipy.special.gamma
+
+    if p * q <= 1:
+        return jnp.nan
+
+    return mu - 2 * lbda * sigma * q ** (1 / p) * gamma(q - 1 / p) * gamma(2 / p) / (
+        gamma(1 / p) * gamma(q)
+    )
+
+
+def _ges_t_variance(mu, sigma, p, q, lbda):
+    """
+    If X \sim GES-t(\mu, \sigma^2, p, q, \lambda), then return its variance \Var(X)
+    """
+    gamma = jscipy.special.gamma
+
+    if p * q <= 2:
+        return jnp.nan
+
+    return (
+        sigma**2
+        * q ** (2 / p)
+        / (gamma(1 / p) * gamma(q))
+        * (
+            (1 + 3 * lbda**2) * gamma(3 / p) * gamma(q - 2 / p)
+            - 4
+            * lbda**2
+            * (gamma(2 / p) * gamma(q - 1 / p)) ** 2
+            / (gamma(1 / p) * gamma(q))
+        )
+    )
+
+
+def _ges_t_density(z, mu, sigma, p, q, lbda):
+    """
+    GES-t density. That is, generate the density of X \sim GES-t(\mu, \sigam^2, p, q, \lambda).
+    """
+    power = jnp.power
+    beta = jscipy.special.beta
+
+    scaling = p / (2 * power(q, 1 / p) * beta(1 / p, q) * sigma)
+
+    if z >= mu:
+        f = power(
+            1 + (1 / q) * power((z - mu) / (sigma * (1 - lbda)), p),
+            -q - 1 / p,
+        )
+    else:
+        f = power(
+            1 + (1 / q) * power((-z + mu) / (sigma * (1 + lbda)), p),
+            -q - 1 / p,
+        )
+
+    return scaling * f
+
+
+def _standardized_ges_t_density(y, mu, sigma, p, q, lbda):
+    """
+    Generate a standardized GES-t density. That is, if X \sim GES-t(\mu, \sigam^2, p, q, \lambda),
+    return the density of Y = (X - \mu_X) / \sigma_X, so that \E[Y] = 0 and \Var(Y) = 1.
+
+    Apply change-of-variables formula. Let Y = g(X), where g(x) = (x - \mu_X) / \sigma_X. Clearly
+    g is montonically increasing. Then by the change-of-variables formula, the density g_Y of Y is
+    f_Y(y) = f_X( g^{-1}(y) ) \abs{\frac{d g^{-1}(y)}{dy}}. Here, g^{-1}(y) = \mu_X + \sigma_X y, and so
+    \frac{d g^{-1}(y)}{dy} = \sigma_X. Thus, we have
+    f_Y(y) = \sigma_X f_X( \mu_X + \sigma_X y )
+    """
+    mu_X = _ges_t_mean(mu=mu, sigma=sigma, p=p, q=q, lbda=lbda)
+    var_X = _ges_t_variance(mu=mu, sigma=sigma, p=p, q=q, lbda=lbda)
+    sigma_X = jnp.sqrt(var_X)
+
+    return sigma_X * _ges_t_density(
+        z=mu_X + sigma_X * y, mu=mu, sigma=sigma, p=p, q=q, lbda=lbda
+    )
+
+
+def _sgt_density(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
     """
     SGT density
     """
@@ -82,6 +169,9 @@ def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
         (1 + 3 * lbda**2) * beta(3 / p0, q0 - 2 / p0) / beta(1 / p0, q0)
         - 4 * lbda**2 * beta(2 / p0, q0 - 1 / p0) ** 2 / beta(1 / p0, q0) ** 2
     )
+    if var_adj:
+        sigma = sigma / v
+
     m = (
         lbda
         * sigma
@@ -90,10 +180,6 @@ def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
         * beta(2 / p0, q0 - 1 / p0)
         / beta(1 / p0, q0)
     )
-
-    if var_adj:
-        sigma = sigma * v
-
     if mean_cent:
         z = z + m
 
@@ -104,18 +190,68 @@ def _sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
         * beta(1 / p0, q0)
         * power(
             1
-            + power(abs(z - mu + m), p0)
-            / (q0 * power(v * sigma, p0) * power(1 + lbda * sign(z - mu + m), p0)),
+            + power(abs(z - mu), p0)
+            / (q0 * power(sigma, p0) * power(1 + lbda * sign(z - mu), p0)),
             1 / p0 + q0,
         )
     )
+    # density = p0 / (
+    #     2
+    #     * v
+    #     * sigma
+    #     * power(q0, 1 / p0)
+    #     * beta(1 / p0, q0)
+    #     * power(
+    #         1
+    #         + power(abs(z - mu + m), p0)
+    #         / (q0 * power(sigma, p0) * power(1 + lbda * sign(z - mu + m), p0)),
+    #         1 / p0 + q0,
+    #     )
+    # )
+
     return density
 
 
-def log_sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
+def _log_sgt_density(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
     """
     Log of SGT density
     """
+    power = jnp.power
+    sqrt = jnp.sqrt
+    beta = jscipy.special.beta
+    log = jnp.log
+    sign = jnp.sign
+
+    v = power(q0, 1 / p0) * sqrt(
+        (1 + 3 * lbda**2) * beta(3 / p0, q0 - 2 / p0) / beta(1 / p0, q0)
+        - 4 * lbda**2 * beta(2 / p0, q0 - 1 / p0) ** 2 / beta(1 / p0, q0) ** 2
+    )
+    if var_adj:
+        sigma = sigma / v
+
+    m = (
+        lbda
+        * sigma
+        * 2
+        * power(q0, 1 / p0)
+        * beta(2 / p0, q0 - 1 / p0)
+        / beta(1 / p0, q0)
+    )
+    if mean_cent:
+        z = z + m
+
+    # HACK:
+    # return (
+    #     log(p0)
+    #     - log(2)
+    #     - log(sigma)
+    #     - log(q0) / p0
+    #     - log(beta(1 / p0, q0))
+    #     - (1 / p0 + q0)
+    #     * log(
+    #         1 + abs(z - mu) ** p0 / (q0 * sigma**p0 * (1 + lbda * sign(z - mu)) ** p0)
+    #     )
+    # )
     return jnp.log(
         _sgt_density(
             z=z,
@@ -124,10 +260,62 @@ def log_sgt_density(z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True
             q0=q0,
             mu=mu,
             sigma=sigma,
-            mean_cent=mean_cent,
-            var_adj=var_adj,
+            mean_cent=True,
+            var_adj=True,
         )
     )
+
+
+def calc_sgt_loglikelihood(params, vec_z, neg: bool = True):
+    """
+    Calculate the (negative) log-likelihood of the SGT distribution.
+    """
+    v_log_sgt_density = vmap(_log_sgt_density, in_axes=[0, None, None, None])
+
+    # NOTE: lbda = params[0], p0 = params[1], q0 = params[2]
+    log_sgt_density_summands = v_log_sgt_density(vec_z, params[0], params[1], params[2])
+    loglik = jnp.sum(log_sgt_density_summands)
+
+    if neg:
+        return -1 * loglik
+    else:
+        return loglik
+
+
+def calc_sgt_score(vec_z, lbda, p0, q0):
+    """
+    Calculate the score function (i.e. gradient of the log-likelihood) of
+    the SGT distribution.
+    """
+    jimmy = jax.grad(_log_sgt_density, argnums=1)
+    rng = np.linspace(-1, 1, 100)
+
+    kimmy = lambda x: jimmy(0.0, -0.25, x, q0)
+    stuff = jaxopt.Bisection(kimmy, 0.01, 1000)
+
+    breakpoint()
+
+    blahblah = [jimmy(0.0, sel, p0, 100000) for sel in rng]
+    blahblah = np.array(blahblah)
+
+    plt.plot(rng, blahblah)
+    plt.show()
+
+    breakpoint()
+
+    v_hi = vmap(hi, in_axes=[0, None, None, None])
+    stuffy = v_hi(vec_z, lbda, p0, q0)
+    stuffy = jnp.array(stuffy)
+
+    jax.test_util.check_grads(_log_sgt_density, args=(1.0, lbda, p0, q0), order=2)
+
+    sgt_score_summand = jax.grad(_log_sgt_density, argnums=(1, 2, 3))
+    v_sgt_score_summand = vmap(sgt_score_summand, in_axes=[0, None, None, None])
+
+    sgt_score_summands = v_sgt_score_summand(vec_z, lbda, p0, q0)
+    sgt_score_summands = jnp.array(sgt_score_summands)
+
+    return sgt_score_summands.sum(axis=1)
 
 
 def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
@@ -139,10 +327,13 @@ def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=Tru
     beta = jscipy.special.beta
     beta_quantile = scipy.stats.beta.ppf
 
-    v = power(q0, -1 / p0) / sqrt(
+    v = power(q0, 1 / p0) * sqrt(
         (1 + 3 * lbda**2) * beta(3 / p0, q0 - 2 / p0) / beta(1 / p0, q0)
         - 4 * lbda**2 * beta(2 / p0, q0 - 1 / p0) ** 2 / beta(1 / p0, q0) ** 2
     )
+    if var_adj:
+        sigma = sigma / v
+
     m = (
         lbda
         * sigma
@@ -151,9 +342,6 @@ def _sgt_quantile(prob, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=Tru
         * beta(2 / p0, q0 - 1 / p0)
         / beta(1 / p0, q0)
     )
-
-    if var_adj:
-        sigma = sigma * v
 
     lam = lbda
 
@@ -484,7 +672,7 @@ def _gen_garch_init_params(mat_rtn):
 #
 
 
-@jit
+# @jit
 def _calc_log_likelihood_t(
     # Asset returns
     tt,
@@ -678,50 +866,69 @@ _ = jax.random.uniform(key, (num_assets, num_assets)) / 2
 mat_q_bar = jnp.dot(_, _.transpose())
 
 
-# Simulate (z_{i,t})
-
-# Make params
+# Make simulation true params
 key, subkey = random.split(key)
-vec_lbda = 2 * jax.random.uniform(key, (num_assets, 1)) - 1
-
-key, subkey = random.split(key)
-vec_p0 = 5 * (jax.random.uniform(key, (num_assets, 1)))
+# sim_param_lbda = 2 * jax.random.uniform(key) - 1
+sim_param_lbda = -0.25
 
 key, subkey = random.split(key)
-vec_q0 = 100 * jax.random.uniform(key, (num_assets, 1)) + 1
+# sim_param_p0 = 5 * jax.random.uniform(key)
+sim_param_p0 = 1.7
 
 key, subkey = random.split(key)
-lst_uniforms = jax.random.uniform(key, (num_assets, num_time_obs))
+# sim_param_q0 = 100 * jax.random.uniform(key) + 1
+sim_param_q0 = 10000.0
+
+key, subkey = random.split(key)
+lst_uniforms = jax.random.uniform(key, (num_time_obs,))
 
 # sim_sgt_z = vmap(_sgt_quantile, in_axes=(0, 0, 0, 0))
 # blah = sim_sgt_z(lst_uniforms, vec_lbda, vec_p0, vec_q0)
 
+# Simulate (z_{1,t})
 sim_z_t = [
-    [
-        _sgt_quantile(
-            prob=p,
-            lbda=vec_lbda[asset],
-            p0=vec_p0[asset],
-            q0=vec_q0[asset],
-        )
-        for p in lst_uniforms[asset, :]
-    ]
-    for asset in np.arange(num_assets)
+    _sgt_quantile(
+        prob=p,
+        lbda=sim_param_lbda,
+        p0=sim_param_p0,
+        q0=sim_param_q0,
+    )
+    for p in lst_uniforms
 ]
 sim_z_t = jnp.array(sim_z_t)
-sim_z_t = sim_z_t.reshape(num_assets, num_time_obs)
 
 
-def sgt_score(vec_z, lbda, p0, q0, mu=0, sigma=1, mean_cent=True, var_adj=True):
-    pass
+# guess_param_lbda = 0.25
+# guess_param_p0 = 2.0
+# guess_param_q0 = 100.0
+guess_param_lbda = sim_param_lbda
+guess_param_p0 = sim_param_p0
+guess_param_q0 = sim_param_q0
+
+gummy = calc_sgt_loglikelihood(
+    [guess_param_lbda, guess_param_p0, guess_param_q0], sim_z_t
+)
+bears = jax.scipy.optimize.minimize(
+    calc_sgt_loglikelihood,
+    x0=jnp.array([0.25, 2.0, 100.0]),
+    args=(sim_z_t,),
+    method="BFGS",
+)
 
 
-# Score
-sgt_score = jax.grad(log_sgt_density, argnums=(1, 2, 3))
+hi = calc_sgt_score(
+    vec_z=sim_z_t, lbda=guess_param_lbda, p0=guess_param_p0, q0=guess_param_q0
+)
 
-blah = jax.grad(log_sgt_density, argnums=(1, 2, 3))
+# jimmy = _log_sgt_density(
+#     z=0, lbda=guess_param_lbda, p0=guess_param_p0, q0=guess_param_q0
+# )
+# jimmy_ha = jnp.log(
+#     _sgt_density(z=0, lbda=guess_param_lbda, p0=guess_param_p0, q0=guess_param_q0)
+# )
 
-gummy = blah(sim_z_t[0, 0], 0.1, 2.0, 100.0)
+
+breakpoint()
 
 
 map_sgt_density = vmap(_sgt_density, in_axes=(0, 0, 0, 0))
@@ -733,11 +940,10 @@ hi = map_sgt_density(
     jnp.repeat(100, num_time_obs),
 )
 
-_sgt_density(sim_z_t[0, :], 0.1, 2, 100)
 
 breakpoint()
 
-sgt_score(0.1, 1.0, 2.0, 3.0)
+calc_sgt_score(0.1, 1.0, 2.0, 3.0)
 
 
 vec_z_0 = jnp.array(vec_z_0)
@@ -748,6 +954,8 @@ vec_z_t_minus_one = vec_z_0
 lbda_0 = 0
 p0_0 = 2
 q0_0 = 100
+
+breakpoint()
 
 
 # Simulate (z_{i,0}) for t = 0
