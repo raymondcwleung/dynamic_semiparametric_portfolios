@@ -171,17 +171,17 @@ def _epsilon_skew_power_exponetial_density(v, p, lbda):
 
     return scaling * f
 
+
 def _generalized_gamma(x, p, q):
-    """
-    Density of a T \sim GG(\eta, \delta, \xi) distribution, where we specialize to 
-    \eta = 1, \delta = p / 2, \xi = q.
-    """
+    # """
+    # Density of a T \sim GG(\eta, \delta, \xi) distribution, where we specialize to
+    # \eta = 1, \delta = p / 2, \xi = q.
+    # """
     gamma = jscipy.special.gamma
     exp = jnp.exp
 
-    return (
-        p / ( 2 * gamma(q) ) * x**(p * q / 2 - 1) * exp(-x**(p/2))
-    )
+    return p / (2 * gamma(q)) * x ** (p * q / 2 - 1) * exp(-(x ** (p / 2)))
+
 
 def _sgt_density(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
     """
@@ -924,6 +924,8 @@ sim_z_t = [
     for p in lst_uniforms
 ]
 sim_z_t = jnp.array(sim_z_t)
+
+breakpoint()
 
 
 # guess_param_lbda = 0.25
