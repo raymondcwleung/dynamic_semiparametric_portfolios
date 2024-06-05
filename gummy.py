@@ -50,6 +50,102 @@ def calc_psd_matrix_invsqrt(mat_X: ArrayLike) -> Array:
     return mat_X_invsqrt
 
 
+def _calc_skew_b(nu: float):
+    """
+    See Azzalini (2014) eq (4.15).
+
+    Expression
+    b_\nu = \sqrt{\nu} \Gamma((\nu - 1) / 2) / ( \sqrt{\pi} \Gamma(\nu / 2))
+    """
+    sqrt = jnp.sqrt
+    gamma = jax.scipy.special.gamma
+    pi = jnp.pi
+
+    if nu <= 1:
+        raise ValueError("Only vaid for nu > 1")
+
+    return sqrt(nu) * gamma((nu - 1) / 2) / (sqrt(pi) * gamma(nu / 2))
+
+
+def _calc_skew_delta(vec_alpha, mat_omega_bar) -> float:
+    """
+    See Azzalini (2014) eq (5.11).
+
+    Expression
+    \delta = (1 + \alpha^{\top} \bar{\Omega} \alpha)^{-1/2} \bar{\Omega} \alpha
+    """
+    _numerator = mat_omega_bar @ vec_alpha  # vector
+    _denominator = (1 + jnp.transpose(vec_alpha) @ mat_omega_bar @ vec_alpha) ** (
+        -1 / 2
+    )
+
+    delta = _numerator / _denominator
+    return delta
+
+
+def _pdf_multivariate_student_t(
+    x: ArrayLike, mat_sigma: ArrayLike, nu: DTypeLike
+) -> DTypeLike:
+    """
+    Density of a multivariate Student t's distribution t_d(x ; \Sigma, \nu).
+    See Azzalini (2014) eq (6.9).
+    """
+    pi = jnp.pi
+    gamma = jax.scipy.special.gamma
+    det = jnp.linalg.det
+    inner = jnp.inner
+    solve = jnp.linalg.solve
+
+    dim = jnp.array(jnp.size(x))
+
+    _first_term = gamma((nu + dim) / 2) / (
+        (nu * pi) ** (dim / 2) * gamma(nu / 2) * det(mat_sigma) ** (1 / 2)
+    )
+
+    # Compute x^\top \Sigma^{-1} x
+    x_sigmainv_x = inner(x, solve(mat_sigma, x))
+
+    _second_term = (1 + x_sigmainv_x / nu) ** (-(nu + dim) / 2)
+
+    return _first_term * _second_term
+
+
+def _cdf_t_distribution(x: ArrayLike, nu: float) -> DTypeLike:
+    """
+    The CDF T(x ; \nu) of a univariate Student-t distribution.
+
+    In particular, if \nu = 1, 2, ..., 5 then we use the exact known
+    solution. If \nu > 5, then we use the Li and De Moor (1999) 'A corrected
+    normal approximation for the Student's t distribution' approximation.
+
+    Note: More general choices of a positive-valued real number for
+    \nu involves the 2F1-hypergeometric function, of which JAX currently
+    does not implement (in contrast to scipy).
+    """
+    pi = jnp.pi
+    arctan = jnp.arctan
+    sqrt = jnp.sqrt
+
+    if nu == 1:
+        return 1 / 2 + (1 / pi) * arctan(x)
+    elif nu == 2:
+        return 1 / 2 + x / (2 * sqrt(2) * sqrt(1 + x**2 / 2))
+    elif nu == 3:
+        return 1 / 2 + (1 / pi) * ((x / sqrt(3)) / (1 + x**2 / 3) + arctan(x / sqrt(3)))
+    elif nu == 4:
+        return 1 / 2 + (3 / 8) * (x / sqrt(1 + x**2 / 4)) * (
+            1 - x**2 / (12 * (1 + x**2 / 4))
+        )
+    elif nu == 5:
+        return 1 / 2 + (1 / pi) * (
+            x / (sqrt(5) * (1 + x**2 / 5)) * (1 + 2 / (3 * (1 + x**2 / 5)))
+            + arctan(x / sqrt(5))
+        )
+    else:  # Li and De Moor (1999) approximation
+        lbda = (4 * nu + x**2 - 1) / (4 * nu + 2 * x**2)
+        return jscipy.stats.norm.cdf(lbda * x)
+
+
 def _pdf_normalized_multivariate_skew_normal(
     x: ArrayLike, mat_omega_bar: ArrayLike, vec_alpha: ArrayLike
 ) -> Array:
@@ -182,7 +278,8 @@ def pdf_standardized_transformation_multivariate_skew_normal(x, vec_alpha, nu):
     """
     dim = jnp.size(x)
 
-    # Compute the mean vector and covariance matrix of Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
+    # Compute the mean vector and covariance matrix of
+    # Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
     # where we fix \bar{\Omega} = I_d
     mat_omega_bar = jnp.identity(dim)
 
@@ -213,6 +310,32 @@ def pdf_standardized_transformation_multivariate_skew_normal(x, vec_alpha, nu):
         nu=nu,
     )
     return pdf_val
+
+
+def mean_normalized_multivariate_skew_normal(mat_omega_bar, vec_alpha):
+    """
+    First moment of a SN_d(0, \bar{\Omega}, \alpha) random vector.
+    """
+    b_nu = _calc_skew_b(nu=nu)
+    delta = _calc_skew_delta(vec_alpha=vec_alpha, mat_omega_bar=mat_omega_bar)
+
+    mu_z = b_nu * delta
+    return mu_z
+
+
+def cov_normalized_multivariate_skew_normal(mat_omega_bar, vec_alpha):
+    """
+    Covariance matrix of a SN_d(0, \bar{\Omega}, \alpha) random vector.
+    """
+    dim = jnp.size(vec_alpha)
+
+    mu_z = mean_normalized_multivariate_skew_normal(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
+    )
+    mu_z = mu_z.reshape(dim, 1)
+
+    mat_omega_z = mat_omega_bar - mu_z @ jnp.transpose(mu_z)
+    return mat_omega_z
 
 
 def log_likelihood_normalized_multivariate_skew_normal(
@@ -266,69 +389,6 @@ def _sample_normalized_multivariate_skew_normal(
         return vec_x0
     else:
         return -1 * vec_x0
-
-
-def _pdf_multivariate_student_t(
-    x: ArrayLike, mat_sigma: ArrayLike, nu: DTypeLike
-) -> DTypeLike:
-    """
-    Density of a multivariate Student t's distribution t_d(x ; \Sigma, \nu).
-    See Azzalini (2014) eq (6.9).
-    """
-    pi = jnp.pi
-    gamma = jax.scipy.special.gamma
-    det = jnp.linalg.det
-    inner = jnp.inner
-    solve = jnp.linalg.solve
-
-    dim = jnp.array(jnp.size(x))
-
-    _first_term = gamma((nu + dim) / 2) / (
-        (nu * pi) ** (dim / 2) * gamma(nu / 2) * det(mat_sigma) ** (1 / 2)
-    )
-
-    # Compute x^\top \Sigma^{-1} x
-    x_sigmainv_x = inner(x, solve(mat_sigma, x))
-
-    _second_term = (1 + x_sigmainv_x / nu) ** (-(nu + dim) / 2)
-
-    return _first_term * _second_term
-
-
-def _cdf_t_distribution(x: ArrayLike, nu: float) -> DTypeLike:
-    """
-    The CDF T(x ; \nu) of a univariate Student-t distribution.
-
-    In particular, if \nu = 1, 2, ..., 5 then we use the exact known
-    solution. If \nu > 5, then we use the Li and De Moor (1999) 'A corrected
-    normal approximation for the Student's t distribution' approximation.
-
-    Note: More general choices of a positive-valued real number for
-    \nu involves the 2F1-hypergeometric function, of which JAX currently
-    does not implement (in contrast to scipy).
-    """
-    pi = jnp.pi
-    arctan = jnp.arctan
-    sqrt = jnp.sqrt
-
-    if nu == 1:
-        return 1 / 2 + (1 / pi) * arctan(x)
-    elif nu == 2:
-        return 1 / 2 + x / (2 * sqrt(2) * sqrt(1 + x**2 / 2))
-    elif nu == 3:
-        return 1 / 2 + (1 / pi) * ((x / sqrt(3)) / (1 + x**2 / 3) + arctan(x / sqrt(3)))
-    elif nu == 4:
-        return 1 / 2 + (3 / 8) * (x / sqrt(1 + x**2 / 4)) * (
-            1 - x**2 / (12 * (1 + x**2 / 4))
-        )
-    elif nu == 5:
-        return 1 / 2 + (1 / pi) * (
-            x / (sqrt(5) * (1 + x**2 / 5)) * (1 + 2 / (3 * (1 + x**2 / 5)))
-            + arctan(x / sqrt(5))
-        )
-    else:  # Li and De Moor (1999) approximation
-        lbda = (4 * nu + x**2 - 1) / (4 * nu + 2 * x**2)
-        return jscipy.stats.norm.cdf(lbda * x)
 
 
 def _pdf_normalized_multivariate_skew_t(
@@ -431,6 +491,80 @@ def _sample_normalized_multivariate_skew_t(
     return z
 
 
+def _closed_form_standardized_multivariate_skew_t_params(
+    vec_alpha: ArrayLike, nu: float
+) -> tp.Tuple[Array]:
+    """
+    Return the closed form expressions for the parameters
+    (\\xi_X, \\Omega_X, \\alpha_X, \\nu) of the
+    standardized multivariate Skew-t distribution.
+
+    In particular, let Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \\nu)
+    and construct X = c + A^{\\top} Y which has
+    X \\sim ST_d(\\xi_X, \\Omega_X, \\alpha_X, \\nu), where we set
+    A = \\Sigma_Y^{-1/2} and c = -\\Sigma_Y^{-1/2} \\mu_Y and
+    \\bar{\\Omega} = I_d.
+    """
+    dim = jnp.size(vec_alpha)
+    identity = jnp.identity
+    transpose = jnp.transpose
+    diag = jnp.diag
+
+    # Compute the mean vector and covariance matrix of
+    # Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
+    # where we fix \bar{\Omega} = I_d
+    mat_omega_bar = identity(dim)
+
+    # \Sigma_Y
+    mat_sigma_Y = cov_normalized_multivariate_skew_t(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+    )
+
+    # Get A = \Sigma_Y^{-1/2}
+    mat_A = calc_psd_matrix_invsqrt(mat_sigma_Y)
+
+    # c = -\Sigma_Y^{-1/2} \mu_Y
+    vec_mu_Y = mean_normalized_multivariate_skew_t(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+    )
+    vec_c = -1 * mat_A @ vec_mu_Y
+
+    # \mu_Z = b_{\nu} \delta
+    vec_delta = _calc_skew_delta(vec_alpha=vec_alpha, mat_omega_bar=mat_omega_bar)
+    vec_delta = vec_delta.reshape(dim, 1)
+    b_nu = _calc_skew_b(nu=nu)
+    mu_Z = b_nu * vec_delta
+
+    # We have \Omega_X = A^{\top} A^{\top} = \Sigma_Y^{-1}.
+    # Apply the Sherman-Morrison formula to compute the inverse.
+    mat_omega_X = ((nu - 2) / nu) * (
+        identity(dim)
+        + ((nu - 2) / nu)
+        / (1 - ((nu - 2) / nu) * transpose(mu_Z) @ mu_Z)
+        * mu_Z
+        @ transpose(mu_Z)
+    )
+
+    # Decompose \bar{\Omega}_X = \omega_X^{-1} \Omega_X \omega_X^{-1}
+    # where \omega_X = (diag \Omega_X)^{1/2}
+    mat_diag_omega_X = diag(diag(mat_omega_X) ** (1 / 2))
+    mat_diag_omega_inv_X = diag(diag(mat_omega_X) ** (-1 / 2))
+    mat_omega_bar_X = mat_diag_omega_inv_X @ mat_omega_X @ mat_diag_omega_inv_X
+
+    # Compute \alpha_X
+    vec_alpha_X = (
+        (1 - transpose(vec_delta) @ vec_delta) ** (-1 / 2)
+        * mat_diag_omega_X
+        @ mat_A
+        @ vec_delta
+    )
+
+    # Compute \xi_X
+    vec_xi_X = vec_c
+
+    return (vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu)
+
+
 def sample_standardized_multivariate_skew_t(
     key: KeyArrayLike, vec_alpha: ArrayLike, nu: float
 ):
@@ -468,65 +602,6 @@ def sample_standardized_multivariate_skew_t(
     vec_X = vec_c + mat_A @ vec_Y
 
     return vec_X
-
-
-def _calc_skew_b(nu: float):
-    """
-    See Azzalini (2014) eq (4.15).
-
-    Expression
-    b_\nu = \sqrt{\nu} \Gamma((\nu - 1) / 2) / ( \sqrt{\pi} \Gamma(\nu / 2))
-    """
-    sqrt = jnp.sqrt
-    gamma = jax.scipy.special.gamma
-    pi = jnp.pi
-
-    if nu <= 1:
-        raise ValueError("Only vaid for nu > 1")
-
-    return sqrt(nu) * gamma((nu - 1) / 2) / (sqrt(pi) * gamma(nu / 2))
-
-
-def _calc_skew_delta(vec_alpha, mat_omega_bar) -> float:
-    """
-    See Azzalini (2014) eq (5.11).
-
-    Expression
-    \delta = (1 + \alpha^{\top} \bar{\Omega} \alpha)^{-1/2} \bar{\Omega} \alpha
-    """
-    _numerator = mat_omega_bar @ vec_alpha  # vector
-    _denominator = (1 + jnp.transpose(vec_alpha) @ mat_omega_bar @ vec_alpha) ** (
-        -1 / 2
-    )
-
-    delta = _numerator / _denominator
-    return delta
-
-
-def mean_normalized_multivariate_skew_normal(mat_omega_bar, vec_alpha):
-    """
-    First moment of a SN_d(0, \bar{\Omega}, \alpha) random vector.
-    """
-    b_nu = _calc_skew_b(nu=nu)
-    delta = _calc_skew_delta(vec_alpha=vec_alpha, mat_omega_bar=mat_omega_bar)
-
-    mu_z = b_nu * delta
-    return mu_z
-
-
-def cov_normalized_multivariate_skew_normal(mat_omega_bar, vec_alpha):
-    """
-    Covariance matrix of a SN_d(0, \bar{\Omega}, \alpha) random vector.
-    """
-    dim = jnp.size(vec_alpha)
-
-    mu_z = mean_normalized_multivariate_skew_normal(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
-    )
-    mu_z = mu_z.reshape(dim, 1)
-
-    mat_omega_z = mat_omega_bar - mu_z @ jnp.transpose(mu_z)
-    return mat_omega_z
 
 
 def mean_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha, nu):
@@ -586,6 +661,8 @@ key, subkey = random.split(key)
 vec_xi = 2 * jax.random.uniform(key, shape=(dim,)) - 1
 mat_diag_omega = jnp.identity(dim)
 mat_omega_bar = jnp.identity(dim)
+
+_closed_form_standardized_multivariate_skew_t_params(vec_alpha=vec_alpha_true, nu=nu)
 
 sample_standardized_multivariate_skew_t(key=key, vec_alpha=vec_alpha_true, nu=nu)
 
