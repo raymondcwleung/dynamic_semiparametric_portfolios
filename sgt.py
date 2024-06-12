@@ -85,7 +85,9 @@ def pdf_mvar_indp_sgt(
     return vec_pdf
 
 
-def loglik_mvar_indp_sgt(data: Array, vec_lbda: Array, vec_p0: Array, vec_q0: Array):
+def loglik_mvar_indp_sgt(
+    data: Array, vec_lbda: Array, vec_p0: Array, vec_q0: Array, neg_loglik: bool
+):
     """
     (Negative) of the log-likelihood function of a vector of
     independent SGT random variables.
@@ -96,8 +98,9 @@ def loglik_mvar_indp_sgt(data: Array, vec_lbda: Array, vec_p0: Array, vec_q0: Ar
     loglik_summands = jnp.log(summands)
     loglik = loglik_summands.mean()
 
-    neg_loglik = -1.0 * loglik
-    return neg_loglik
+    if neg_loglik:
+        loglik = -1.0 * loglik
+    return loglik
 
 
 def quantile_sgt(
@@ -200,19 +203,19 @@ def sample_mvar_sgt(
     return data
 
 
-def _generate_mvar_sgt_init_conditions(
+def _generate_mvar_sgt_param_init_guesses(
     key,
     dim: int,
     num_trials: int,
-    lbda_a: float = -0.25,
-    lbda_b: float = 0.5,
-    p0_a: float = 2,
-    p0_b: float = 5,
-    q0_a: float = 2,
-    q0_b: float = 5,
+    lbda_a: float,
+    lbda_b: float,
+    p0_a: float,
+    p0_b: float,
+    q0_a: float,
+    q0_b: float,
 ):
     """
-    Generate random initial conditions for the MLE estimation
+    Generate random initial guesses for the MLE estimation
     of the SGT density. In particular, the parameters are randomly
     generated as follows. Let a, b be two scalars. If U \\sim Uniform[0,1]
     then the parameter in question is generated as a + b U.
@@ -233,7 +236,7 @@ def _generate_mvar_sgt_init_conditions(
     return lst_x0
 
 
-def _mvar_sgt_objfun(x, data):
+def mvar_sgt_objfun(x, data, neg_loglik: bool = True):
     """
     (Negative) of the log-likelihood of the a vector of
     independent SGT random variables.
@@ -245,7 +248,11 @@ def _mvar_sgt_objfun(x, data):
     vec_q0 = x[2 * dim :]
 
     return loglik_mvar_indp_sgt(
-        data=data, vec_lbda=vec_lbda, vec_p0=vec_p0, vec_q0=vec_q0
+        data=data,
+        vec_lbda=vec_lbda,
+        vec_p0=vec_p0,
+        vec_q0=vec_q0,
+        neg_loglik=neg_loglik,
     )
 
 
@@ -253,6 +260,9 @@ def mle_mvar_sgt(
     key: KeyArrayLike,
     data: Array,
     num_trials: int,
+    lst_scale_lbda: list[float] = [-0.25, 0.5],
+    lst_scale_p0: list[float] = [2, 5],
+    lst_scale_q0: list[float] = [2, 5],
     options: dict = {"maxiter": 1000, "gtol": 1e-3},
 ):
     """
@@ -268,7 +278,17 @@ def mle_mvar_sgt(
     dim = data.shape[1]
 
     # Generate the random initial conditions
-    lst_x0 = _generate_mvar_sgt_init_conditions(key=key, dim=dim, num_trials=num_trials)
+    lst_x0 = _generate_mvar_sgt_param_init_guesses(
+        key=key,
+        dim=dim,
+        num_trials=num_trials,
+        lbda_a=lst_scale_lbda[0],
+        lbda_b=lst_scale_lbda[1],
+        p0_a=lst_scale_p0[0],
+        p0_b=lst_scale_p0[1],
+        q0_a=lst_scale_q0[0],
+        q0_b=lst_scale_q0[1],
+    )
 
     # Multi-start local method
     optres = None
@@ -279,7 +299,7 @@ def mle_mvar_sgt(
         x0 = jnp.ravel(x0)
         try:
             nowres = jscipy.optimize.minimize(
-                _mvar_sgt_objfun, x0=x0, method="BFGS", args=(data,), options=options
+                mvar_sgt_objfun, x0=x0, method="BFGS", args=(data,), options=options
             )
 
             if nowres.success and (optres is None or optres.fun > nowres.fun):
@@ -303,7 +323,7 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(1e3)
+    num_sample = int(1e2)
     dim = 3
     num_cores = 8
 
@@ -319,29 +339,6 @@ if __name__ == "__main__":
         vec_q0=vec_q0_true,
         num_cores=num_cores,
     )
-
-    # def objfun(x, data, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
-    #     lbda = x[0]
-    #     p0 = x[1]
-    #     q0 = x[2]
-    #
-    #     neg_loglik = loglik_sgt(
-    #         data,
-    #         lbda=lbda,
-    #         p0=p0,
-    #         q0=q0,
-    #         mu=mu,
-    #         sigma=sigma,
-    #         mean_cent=mean_cent,
-    #         var_adj=var_adj,
-    #     )
-    #     return neg_loglik
-    #
-    #
-    # num_params = 3
-    # x0 = (1 / 2) * jax.random.uniform(key, shape=(dim * num_params,)) - (1 / 4)
-    # x0 = x0.at[1].set(np.abs(x0[1]))
-    # x0 = x0.at[2].set(np.abs(x0[2]))
 
     num_trials = 2
 

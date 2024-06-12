@@ -11,6 +11,8 @@ from jax.typing import ArrayLike, DTypeLike
 
 import logging
 
+import typing as tp
+
 
 import itertools
 
@@ -107,120 +109,186 @@ def _calc_mat_Sigma(vec_sigma: Array, mat_Gamma: Array) -> Array:
     return mat_Sigma
 
 
-seed = 1234567
-key = random.key(seed)
-rng = np.random.default_rng(seed)
-num_sample = int(1e3)
-dim = 3
-num_cores = 8
+def simulate_dcc(
+    key: KeyArrayLike,
+    data_z: Array,
+    vec_omega: NDArray,
+    vec_beta: NDArray,
+    vec_alpha: NDArray,
+    vec_psi: NDArray,
+    vec_delta: NDArray,
+    mat_Qbar: Array,
+) -> tp.Tuple[Array, Array]:
+    """
+    Simulate a DCC model
+    """
+    num_sample = data_z.shape[0]
+    dim = data_z.shape[1]
 
-# Params for z \sim SGT
-vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
-vec_p0_true = rng.uniform(2, 4, dim)
-vec_q0_true = rng.uniform(2, 4, dim)
-
-# Params for DCC
-vec_omega_true = rng.uniform(0, 1, dim) / 2
-vec_beta_true = rng.uniform(0, 1, dim) / 3
-vec_alpha_true = rng.uniform(0, 1, dim) / 10
-vec_psi_true = rng.uniform(0, 1, dim) / 5
-# vec_delta_true = rng.uniform(0, 1, 2)
-# Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
-vec_delta_true = np.array([0.007, 0.930])
-mat_Qbar_true = _generate_random_cov_mat(key=key, dim=dim) / 10
-
-data_z = sgt.sample_mvar_sgt(
-    key=key,
-    num_sample=num_sample,
-    vec_lbda=vec_lbda_true,
-    vec_p0=vec_p0_true,
-    vec_q0=vec_q0_true,
-    num_cores=num_cores,
-)
-
-
-vec_omega = vec_omega_true
-vec_beta = vec_beta_true
-vec_alpha = vec_alpha_true
-vec_psi = vec_psi_true
-vec_delta = vec_delta_true
-mat_Qbar = mat_Qbar_true
-
-# Initial conditions at t = 0
-vec_z_0 = data_z[0, :]
-mat_Sigma_0 = _generate_random_cov_mat(key=key, dim=dim)
-vec_sigma_0 = jnp.sqrt(jnp.diag(mat_Sigma_0))
-vec_epsilon_0 = _calc_unexpected_excess_rtn(mat_Sigma=mat_Sigma_0, vec_z=vec_z_0)
-vec_u_0 = _calc_normalized_unexpected_excess_rtn(
-    vec_sigma=vec_sigma_0, vec_epsilon=vec_epsilon_0
-)
-key, _ = random.split(key)
-mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
-
-# Init
-lst_epsilon = [jnp.empty(dim)] * num_sample
-lst_sigma = [jnp.empty(dim)] * num_sample
-lst_u = [jnp.empty(dim)] * num_sample
-lst_Q = [jnp.empty((dim, dim))] * num_sample
-lst_Sigma = [jnp.empty((dim, dim))] * num_sample
-
-# Save initial conditions
-lst_epsilon[0] = vec_epsilon_0
-lst_sigma[0] = vec_sigma_0
-lst_u[0] = vec_u_0
-lst_Q[0] = mat_Q_0
-lst_Sigma[0] = mat_Sigma_0
-
-for tt in range(1, num_sample):
-    # Set t - 1 quantities
-    vec_epsilon_t_minus_1 = lst_epsilon[tt - 1]
-    vec_sigma_t_minus_1 = lst_sigma[tt - 1]
-    vec_u_t_minus_1 = lst_u[tt - 1]
-    mat_Q_t_minus_1 = lst_Q[tt - 1]
-
-    # Compute \\sigma_{i,t}^2
-    vec_sigma2_t = (
-        vec_omega
-        + vec_beta * vec_sigma_t_minus_1**2
-        + vec_alpha * vec_epsilon_t_minus_1**2
-        + vec_psi * vec_epsilon_t_minus_1**2 * (vec_epsilon_t_minus_1 < 0)
+    # Initial conditions at t = 0
+    vec_z_0 = data_z[0, :]
+    mat_Sigma_0 = _generate_random_cov_mat(key=key, dim=dim)
+    vec_sigma_0 = jnp.sqrt(jnp.diag(mat_Sigma_0))
+    vec_epsilon_0 = _calc_unexpected_excess_rtn(mat_Sigma=mat_Sigma_0, vec_z=vec_z_0)
+    vec_u_0 = _calc_normalized_unexpected_excess_rtn(
+        vec_sigma=vec_sigma_0, vec_epsilon=vec_epsilon_0
     )
-    vec_sigma_t = jnp.sqrt(vec_sigma2_t)
+    key, _ = random.split(key)
+    mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
 
-    # Compute Q_t
-    mat_Q_t = _calc_mat_Q(
-        vec_delta=vec_delta,
-        vec_u_t_minus_1=vec_u_t_minus_1,
-        mat_Q_t_minus_1=mat_Q_t_minus_1,
-        mat_Qbar=mat_Qbar,
+    # Init
+    lst_epsilon = [jnp.empty(dim)] * num_sample
+    lst_sigma = [jnp.empty(dim)] * num_sample
+    lst_u = [jnp.empty(dim)] * num_sample
+    lst_Q = [jnp.empty((dim, dim))] * num_sample
+    lst_Sigma = [jnp.empty((dim, dim))] * num_sample
+
+    # Save initial conditions
+    lst_epsilon[0] = vec_epsilon_0
+    lst_sigma[0] = vec_sigma_0
+    lst_u[0] = vec_u_0
+    lst_Q[0] = mat_Q_0
+    lst_Sigma[0] = mat_Sigma_0
+
+    # Iterate
+    for tt in range(1, num_sample):
+        # Set t - 1 quantities
+        vec_epsilon_t_minus_1 = lst_epsilon[tt - 1]
+        vec_sigma_t_minus_1 = lst_sigma[tt - 1]
+        vec_u_t_minus_1 = lst_u[tt - 1]
+        mat_Q_t_minus_1 = lst_Q[tt - 1]
+
+        # Compute \\sigma_{i,t}^2
+        vec_sigma2_t = (
+            vec_omega
+            + vec_beta * vec_sigma_t_minus_1**2
+            + vec_alpha * vec_epsilon_t_minus_1**2
+            + vec_psi * vec_epsilon_t_minus_1**2 * (vec_epsilon_t_minus_1 < 0)
+        )
+        vec_sigma_t = jnp.sqrt(vec_sigma2_t)
+
+        # Compute Q_t
+        mat_Q_t = _calc_mat_Q(
+            vec_delta=vec_delta,
+            vec_u_t_minus_1=vec_u_t_minus_1,
+            mat_Q_t_minus_1=mat_Q_t_minus_1,
+            mat_Qbar=mat_Qbar,
+        )
+
+        # Compute Gamma_t
+        mat_Gamma_t = _calc_mat_Gamma(mat_Q=mat_Q_t)
+
+        # Compute \Sigma_t
+        mat_Sigma_t = _calc_mat_Sigma(vec_sigma=vec_sigma_t, mat_Gamma=mat_Gamma_t)
+
+        # Compute \epsilon_t
+        vec_z = data_z[tt, :]
+        vec_epsilon_t = _calc_unexpected_excess_rtn(mat_Sigma=mat_Sigma_t, vec_z=vec_z)
+
+        # Compute u_t
+        vec_u_t = _calc_normalized_unexpected_excess_rtn(
+            vec_sigma=vec_sigma_t, vec_epsilon=vec_epsilon_t
+        )
+
+        # Bookkeeping
+        lst_epsilon[tt] = vec_epsilon_t
+        lst_sigma[tt] = vec_sigma_t
+        lst_u[tt] = vec_u_t
+        lst_Q[tt] = mat_Q_t
+        lst_Sigma[tt] = mat_Sigma_t
+
+    # Convenient output form
+    mat_epsilon = jnp.array(lst_epsilon)
+    tns_Sigma = jnp.array(lst_Sigma)
+    return mat_epsilon, tns_Sigma
+
+
+def simulate_returns(
+    seed: int,
+    dim: int,
+    num_sample: int,
+    dict_params_mean,
+    dict_params_z,
+    dict_params_dcc,
+):
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+
+    # Simulate the innovations
+    data_z = sgt.sample_mvar_sgt(key=key, num_sample=num_sample, **dict_params_z)
+
+    # Simulate a DCC model and obtain \epsilon_t and \Sigma_t
+    mat_epsilon, tns_Sigma = simulate_dcc(key=key, data_z=data_z, **dict_params_dcc)
+
+    # Set the asset mean
+    vec_mu = dict_params_mean["vec_mu"]
+
+    # Asset returns
+    mat_returns = vec_mu + mat_epsilon
+
+    # Sanity checks
+    if mat_returns.shape != (num_sample, dim):
+        logger.error("Incorrect shape for the simulated returns.")
+
+    return mat_returns
+
+
+def _calc_innovations(vec_returns: Array, mat_Sigma: Array) -> Array:
+    """
+    Return z_t = \\Sigma_t^{-1/2} R_t, where we are given
+    returns {R_t} and conditional covariances {\\Sigma_t},
+    """
+    mat_Sigma_sqrt = jnp.linalg.cholesky(mat_Sigma)
+    vec_z = jnp.linalg.solve(mat_Sigma_sqrt, vec_returns)
+
+    return vec_z
+
+
+def calc_innovations(mat_returns: Array, tns_Sigma: Array) -> Array:
+    """
+    Calculate innovations over the full sample.
+    """
+    _func = vmap(_calc_innovations, in_axes=[0, 0])
+    mat_z = _func(mat_returns, tns_Sigma)
+
+    return mat_z
+
+
+if __name__ == "__main__":
+    seed = 1234567
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+    num_sample = int(1e3)
+    dim = 3
+    num_cores = 8
+
+    # Parameters for the mean returns vector
+    dict_params_mean = {"vec_mu": rng.uniform(0, 1, dim) / 50}
+
+    # Params for z \sim SGT
+    dict_params_z = {
+        "vec_lbda": rng.uniform(-0.25, 0.25, dim),
+        "vec_p0": rng.uniform(2, 4, dim),
+        "vec_q0": rng.uniform(2, 4, dim),
+    }
+
+    # Params for DCC
+    dict_params_dcc = {
+        "vec_omega": rng.uniform(0, 1, dim) / 2,
+        "vec_beta": rng.uniform(0, 1, dim) / 3,
+        "vec_alpha": rng.uniform(0, 1, dim) / 10,
+        "vec_psi": rng.uniform(0, 1, dim) / 5,
+        # vec_delta_true = rng.uniform(0, 1, 2)
+        # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
+        "vec_delta": np.array([0.007, 0.930]),
+        "mat_Qbar": _generate_random_cov_mat(key=key, dim=dim) / 10,
+    }
+
+    mat_returns = simulate_returns(
+        seed=seed,
+        dim=dim,
+        num_sample=num_sample,
+        dict_params_mean=dict_params_mean,
+        dict_params_z=dict_params_z,
+        dict_params_dcc=dict_params_dcc,
     )
-
-    # Compute Gamma_t
-    mat_Gamma_t = _calc_mat_Gamma(mat_Q=mat_Q_t)
-
-    # Compute \Sigma_t
-    mat_Sigma_t = _calc_mat_Sigma(vec_sigma=vec_sigma_t, mat_Gamma=mat_Gamma_t)
-
-    # Compute \epsilon_t
-    vec_z = data_z[tt, :]
-    vec_epsilon_t = _calc_unexpected_excess_rtn(mat_Sigma=mat_Sigma_t, vec_z=vec_z)
-
-    # Compute u_t
-    vec_u_t = _calc_normalized_unexpected_excess_rtn(
-        vec_sigma=vec_sigma_t, vec_epsilon=vec_epsilon_t
-    )
-
-    # Bookkeeping
-    lst_epsilon[tt] = vec_epsilon_t
-    lst_sigma[tt] = vec_sigma_t
-    lst_u[tt] = vec_u_t
-    lst_Q[tt] = mat_Q_t
-    lst_Sigma[tt] = mat_Sigma_t
-
-
-asset_i = 2
-yy = [lst_sigma[tt][asset_i] for tt in range(len(lst_sigma))]
-yy = np.array(yy)
-xx = range(len(lst_sigma))
-plt.plot(xx, yy)
-plt.show()
