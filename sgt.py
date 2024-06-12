@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def pdf_sgt(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
     """
-    SGT density
+    Univariate SGT density
     """
     power = jnp.power
     sqrt = jnp.sqrt
@@ -74,39 +74,22 @@ def pdf_mvar_indp_sgt(
     vec_lbda: ArrayLike,
     vec_p0: ArrayLike,
     vec_q0: ArrayLike,
-    mu: float = 0.0,
-    sigma: float = 1.0,
-    mean_cent: bool = True,
-    var_adj: bool = True,
 ):
-    dim = jnp.size(vec_lbda)
-
+    """
+    Let X_1 \\sim SGT(\\theta_1), \\ldots, X_d \\sim SGT(\\theta_d) be
+    independent. Construct the random vector X = (X_1, \\ldots, X_d).
+    Return the density of X.
+    """
     _func = vmap(pdf_sgt, in_axes=[0, 0, 0, 0])
     vec_pdf = _func(x, vec_lbda, vec_p0, vec_q0)
     return vec_pdf
 
 
-def loglik_sgt(data, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
-    _pdf = lambda x: pdf_sgt(
-        x,
-        lbda=lbda,
-        p0=p0,
-        q0=q0,
-        mu=mu,
-        sigma=sigma,
-        mean_cent=mean_cent,
-        var_adj=var_adj,
-    )
-    _func = vmap(_pdf, in_axes=0)
-
-    summands = _func(data)
-    loglik_summands = jnp.log(summands)
-
-    loglik = loglik_summands.mean()
-    return -1.0 * loglik
-
-
 def loglik_mvar_indp_sgt(data: Array, vec_lbda: Array, vec_p0: Array, vec_q0: Array):
+    """
+    (Negative) of the log-likelihood function of a vector of
+    independent SGT random variables.
+    """
     _func = vmap(pdf_mvar_indp_sgt, in_axes=[0, None, None, None])
 
     summands = _func(data, vec_lbda, vec_p0, vec_q0)
@@ -129,7 +112,7 @@ def quantile_sgt(
     use_jax: bool = False,
 ):
     """
-    SGT quantile
+    Univariate SGT quantile
     """
     beta_quantile = scipy.stats.beta.ppf
     if use_jax:
@@ -182,6 +165,7 @@ def quantile_sgt(
 
 def sample_mvar_sgt(
     key: KeyArrayLike,
+    num_sample: int,
     vec_lbda: ArrayLike,
     vec_p0: ArrayLike,
     vec_q0: ArrayLike,
@@ -189,6 +173,12 @@ def sample_mvar_sgt(
     sigma: float = 1.0,
     num_cores: int = 1,
 ) -> Array:
+    """
+    Generate samples of SGT random vectors by
+    inverse transform sampling.
+
+    NOTE: This function does not use JAX.
+    """
     import multiprocessing as mp
 
     dim = jnp.size(vec_lbda)
@@ -210,66 +200,7 @@ def sample_mvar_sgt(
     return data
 
 
-seed = 1234567
-key = random.key(seed)
-rng = np.random.default_rng(seed)
-lbda_true = -0.25
-p0_true = 2.0
-q0_true = 5.0
-num_sample = int(1e3)
-dim = 3
-num_cores = 8
-
-vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
-vec_p0_true = rng.uniform(2, 10, dim)
-vec_q0_true = rng.uniform(2, 10, dim)
-
-data = sample_mvar_sgt(
-    key=key,
-    vec_lbda=vec_lbda_true,
-    vec_p0=vec_p0_true,
-    vec_q0=vec_q0_true,
-    num_cores=num_cores,
-)
-
-
-def mvar_objfun(x, data):
-    dim = data.shape[1]
-
-    vec_lbda = x[0:dim]
-    vec_p0 = x[dim : 2 * dim]
-    vec_q0 = x[2 * dim :]
-
-    return loglik_mvar_indp_sgt(
-        data=data, vec_lbda=vec_lbda, vec_p0=vec_p0, vec_q0=vec_q0
-    )
-
-
-# def objfun(x, data, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
-#     lbda = x[0]
-#     p0 = x[1]
-#     q0 = x[2]
-#
-#     neg_loglik = loglik_sgt(
-#         data,
-#         lbda=lbda,
-#         p0=p0,
-#         q0=q0,
-#         mu=mu,
-#         sigma=sigma,
-#         mean_cent=mean_cent,
-#         var_adj=var_adj,
-#     )
-#     return neg_loglik
-#
-#
-# num_params = 3
-# x0 = (1 / 2) * jax.random.uniform(key, shape=(dim * num_params,)) - (1 / 4)
-# x0 = x0.at[1].set(np.abs(x0[1]))
-# x0 = x0.at[2].set(np.abs(x0[2]))
-
-
-def _gen_x0(
+def _generate_mvar_sgt_init_conditions(
     key,
     dim: int,
     num_trials: int,
@@ -280,6 +211,12 @@ def _gen_x0(
     q0_a: float = 2,
     q0_b: float = 5,
 ):
+    """
+    Generate random initial conditions for the MLE estimation
+    of the SGT density. In particular, the parameters are randomly
+    generated as follows. Let a, b be two scalars. If U \\sim Uniform[0,1]
+    then the parameter in question is generated as a + b U.
+    """
     key, subkey = random.split(key)
     lbda_guesses = lbda_a + lbda_b * jax.random.uniform(key, shape=(num_trials, dim))
     lbda_guesses = np.array(lbda_guesses)
@@ -296,32 +233,118 @@ def _gen_x0(
     return lst_x0
 
 
-num_trials = 3
-lst_x0 = _gen_x0(key=key, dim=dim, num_trials=num_trials)
-options = {"maxiter": 1000, "gtol": 1e-3}
+def _mvar_sgt_objfun(x, data):
+    """
+    (Negative) of the log-likelihood of the a vector of
+    independent SGT random variables.
+    """
+    dim = data.shape[1]
 
-# Multi-start local method
-bestres = None
-for ii in range(len(lst_x0)):
-    print(f"Iteration num {ii}/{len(lst_x0)}")
+    vec_lbda = x[0:dim]
+    vec_p0 = x[dim : 2 * dim]
+    vec_q0 = x[2 * dim :]
 
-    x0 = jnp.array(lst_x0[ii])
-    x0 = jnp.ravel(x0)
-    try:
-        nowres = jscipy.optimize.minimize(
-            mvar_objfun, x0=x0, method="BFGS", args=(data,), options=options
-        )
+    return loglik_mvar_indp_sgt(
+        data=data, vec_lbda=vec_lbda, vec_p0=vec_p0, vec_q0=vec_q0
+    )
 
-        if nowres.success and (bestres is None or bestres.fun > nowres.fun):
-            bestres = nowres
-        else:
-            logger.info(f"No solution at iteration {ii}. x0 = {x0}")
 
-    except FloatingPointError:
-        logger.warning(f"Iteration {ii} encountered FloatingPointError. x0 = {x0}")
-        continue
+def mle_mvar_sgt(
+    key: KeyArrayLike,
+    data: Array,
+    num_trials: int,
+    options: dict = {"maxiter": 1000, "gtol": 1e-3},
+):
+    """
+    MLE for the SGT density.
 
-if (bestres is None) or (bestres.success is False):
-    logger.error("No solution found!")
-else:
-    logger.info("Done!")
+    Parameters
+    ----------
+    num_trials: Number of random numbers to generate for
+        each parameter.
+    """
+    logger.info("Begin MLE for SGT")
+
+    dim = data.shape[1]
+
+    # Generate the random initial conditions
+    lst_x0 = _generate_mvar_sgt_init_conditions(key=key, dim=dim, num_trials=num_trials)
+
+    # Multi-start local method
+    optres = None
+    for ii in range(len(lst_x0)):
+        print(f"Iteration num {ii}/{len(lst_x0)}")
+
+        x0 = jnp.array(lst_x0[ii])
+        x0 = jnp.ravel(x0)
+        try:
+            nowres = jscipy.optimize.minimize(
+                _mvar_sgt_objfun, x0=x0, method="BFGS", args=(data,), options=options
+            )
+
+            if nowres.success and (optres is None or optres.fun > nowres.fun):
+                optres = nowres
+            else:
+                logger.info(f"No solution at iteration {ii}. x0 = {x0}")
+
+        except FloatingPointError:
+            logger.warning(f"Iteration {ii} encountered FloatingPointError. x0 = {x0}")
+            continue
+
+    if (optres is None) or (optres.success is False):
+        logger.error("No solution found!")
+    else:
+        logger.info("Done! Complete MLE for SGT.")
+
+    return optres
+
+
+if __name__ == "__main__":
+    seed = 1234567
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+    num_sample = int(1e3)
+    dim = 3
+    num_cores = 8
+
+    vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
+    vec_p0_true = rng.uniform(2, 10, dim)
+    vec_q0_true = rng.uniform(2, 10, dim)
+
+    data = sample_mvar_sgt(
+        key=key,
+        num_sample=num_sample,
+        vec_lbda=vec_lbda_true,
+        vec_p0=vec_p0_true,
+        vec_q0=vec_q0_true,
+        num_cores=num_cores,
+    )
+
+    # def objfun(x, data, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
+    #     lbda = x[0]
+    #     p0 = x[1]
+    #     q0 = x[2]
+    #
+    #     neg_loglik = loglik_sgt(
+    #         data,
+    #         lbda=lbda,
+    #         p0=p0,
+    #         q0=q0,
+    #         mu=mu,
+    #         sigma=sigma,
+    #         mean_cent=mean_cent,
+    #         var_adj=var_adj,
+    #     )
+    #     return neg_loglik
+    #
+    #
+    # num_params = 3
+    # x0 = (1 / 2) * jax.random.uniform(key, shape=(dim * num_params,)) - (1 / 4)
+    # x0 = x0.at[1].set(np.abs(x0[1]))
+    # x0 = x0.at[2].set(np.abs(x0[2]))
+
+    num_trials = 2
+
+    hi = mle_mvar_sgt(key=key, data=data, num_trials=num_trials)
+
+    breakpoint()
