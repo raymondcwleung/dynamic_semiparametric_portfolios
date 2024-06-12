@@ -1,3 +1,6 @@
+from sys import exception
+from chex._src.pytypes import ArrayBatched
+from jax._src.prng import key_array_shard_arg_handler
 import jax.numpy as jnp
 import jax.scipy as jscipy
 import jax.scipy.optimize
@@ -26,28 +29,85 @@ from scipy.linalg import cholesky
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
-# jax.config.update("jax_enable_x64", True) # Should use x64 in full prod
+jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
-def calc_psd_matrix_invsqrt(mat_X: ArrayLike) -> Array:
+# def calc_psd_matrix_invsqrt(mat_X: Array, small_num: float = 1e-5) -> Array:
+#     """
+#     Compute the inverse square root of positive definite symmetric matrix X.
+#     That is, return the matrix B such that B^2 = B^{\\top} B = X^{-1}.
+#     In other words, use the notation X^{-1/2} := B.
+#     """
+#     diag = jnp.diag
+#     eigh = jnp.linalg.eigh
+#     transpose = jnp.transpose
+#     identity = jnp.identity
+#
+#     dim = mat_X.shape[0]
+#
+#     mat = mat_X + small_num * identity(dim)
+#
+#     # blah = np.array(mat_X.primal)
+#     # vv, ww = np.linalg.eig(blah)
+#
+#     # Use the spectral theorem on the fuction t \mapsto t^{-1/2}
+#     try:
+#         eigenvals, eigenvecs = eigh(mat)
+#     except FloatingPointError:
+#         breakpoint()
+#
+#     # Ensure eigenvalues are all positive-valued
+#     # If not, return an arbitarily "inverse" matrix
+#     if eigenvals.min() <= 0:
+#         bogus_dummy = jnp.identity(dim)
+#         return bogus_dummy
+#
+#     mat_inv_sqrt_eigenvals = diag(eigenvals ** (-1 / 2))
+#
+#     # Compute X^{-1/2}
+#     mat_X_invsqrt = eigenvecs @ mat_inv_sqrt_eigenvals @ transpose(eigenvecs)
+#
+#     return mat_X_invsqrt
+#
+
+
+def _diag_decompose_covariance_to_correlation(mat_cov):
+    """
+    Take a covariance matrix \\Omega and rewrite it as
+    \\omega \\bar{\\Omega} \\omega, where \\omega is a
+    diagonal matrix, and \\bar{\\Omega} is a correlation matrix.
+    """
+    diag = jnp.diag
+
+    mat_diag_omega = diag(diag(mat_cov) ** (1 / 2))
+    mat_diag_omega_inv = diag(diag(mat_cov) ** (-1 / 2))
+    mat_omega_bar = mat_diag_omega_inv @ mat_cov @ mat_diag_omega_inv
+
+    return mat_diag_omega, mat_omega_bar
+
+
+def calc_psd_matrix_decomposition(mat_X: Array, upper: bool = True) -> Array:
+    # Cholesky decomposition; i.e. U^{\top} U = X
+    mat_U = jnp.linalg.cholesky(mat_X, upper=upper)
+
+    return mat_U
+
+
+def calc_psd_matrix_invsqrt(mat_X: Array, upper: bool = True) -> Array:
     """
     Compute the inverse square root of positive definite symmetric matrix X.
     That is, return the matrix B such that B^2 = B^{\\top} B = X^{-1}.
     In other words, use the notation X^{-1/2} := B.
     """
-    diag = jnp.diag
-    eigh = jnp.linalg.eigh
-    transpose = jnp.transpose
+    # Cholesky decomposition; i.e. U^{\top} U = X
+    mat_U = jnp.linalg.cholesky(mat_X, upper=upper)
 
-    # Use the spectral theorem on the fuction t \mapsto t^{-1/2}
-    eigenvals, eigenvecs = eigh(mat_X)
-    mat_inv_sqrt_eigenvals = diag(eigenvals ** (-1 / 2))
+    # Compute the inverse;
+    # i.e. (U^{\top} U)^{-1} = U^{-1} U^{-1, \top} = X^{-1}
+    mat_U_inv = jnp.linalg.inv(mat_U)
 
-    # Compute X^{-1/2}
-    mat_X_invsqrt = eigenvecs @ mat_inv_sqrt_eigenvals @ transpose(eigenvecs)
-
-    return mat_X_invsqrt
+    return mat_U_inv
 
 
 def _calc_skew_b(nu: float):
@@ -55,7 +115,7 @@ def _calc_skew_b(nu: float):
     See Azzalini (2014) eq (4.15).
 
     Expression
-    b_\nu = \sqrt{\nu} \Gamma((\nu - 1) / 2) / ( \sqrt{\pi} \Gamma(\nu / 2))
+    b_\\nu = \\sqrt{\\nu} \\Gamma((\\nu - 1) / 2) / ( \\sqrt{\\pi} \\Gamma(\\nu / 2))
     """
     sqrt = jnp.sqrt
     gamma = jax.scipy.special.gamma
@@ -268,50 +328,6 @@ def _pdf_affine_transformation_multivariate_skew_normal(
     return _pdf
 
 
-def pdf_standardized_transformation_multivariate_skew_normal(x, vec_alpha, nu):
-    """
-    Density of X = c + A^{\\top} Y, where Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \\nu),
-    such that c = -\\Sigma_Y^{-1/2} \\mu_Y, A = \\Sigma_Y^{-1/2}, \\bar{\\Omega} = I_d.
-
-    In other words, X will be skew-t multivariate distribution but with mean zero
-    and identity variance-covariance.
-    """
-    dim = jnp.size(x)
-
-    # Compute the mean vector and covariance matrix of
-    # Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
-    # where we fix \bar{\Omega} = I_d
-    mat_omega_bar = jnp.identity(dim)
-
-    # Compute \Sigma_Y
-    mat_sigma_Y = cov_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-    )
-
-    # Get A = \Sigma_Y^{-1/2}
-    mat_A = calc_psd_matrix_invsqrt(mat_sigma_Y)
-
-    # c = -\Sigma_Y^{-1/2} \mu_Y
-    vec_mu_Y = mean_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-    )
-    vec_c = -1 * mat_A @ vec_mu_Y
-
-    vec_xi = jnp.repeat(0.0, dim)
-    mat_diag_omega = jnp.identity(dim)
-    pdf_val = _pdf_affine_transformation_multivariate_skew_normal(
-        x,
-        vec_c=vec_c,
-        mat_A=mat_A,
-        vec_xi=vec_xi,
-        mat_diag_omega=mat_diag_omega,
-        mat_omega_bar=mat_omega_bar,
-        vec_alpha=vec_alpha,
-        nu=nu,
-    )
-    return pdf_val
-
-
 def mean_normalized_multivariate_skew_normal(mat_omega_bar, vec_alpha):
     """
     First moment of a SN_d(0, \bar{\Omega}, \alpha) random vector.
@@ -384,18 +400,22 @@ def _sample_normalized_multivariate_skew_normal(
     vec_x = jax.random.multivariate_normal(key=key, mean=mean, cov=mat_omega_star)
     vec_x0 = vec_x[:-1]
     x1 = vec_x[-1]
+    sign_x1 = jnp.sign(x1)
 
-    if x1 > 0:
-        return vec_x0
-    else:
-        return -1 * vec_x0
+    # We output the vectorized operation of the following
+    # if x1 > 0:
+    #     return vec_x0
+    # else:
+    #     return -1 * vec_x0
+
+    return sign_x1 * vec_x0
 
 
 def _pdf_normalized_multivariate_skew_t(
     x: ArrayLike, mat_omega_bar: ArrayLike, vec_alpha: ArrayLike, nu: DTypeLike
 ):
     """
-    Density of a ST_d(0, \bar{\Omega}, \alpha, \nu) random vector.
+    Density of a ST_d(0, \\bar{\\Omega}, \\alpha, \\nu) random vector.
     See Azzalini (2014, Section 6.2.1)
     """
     inner = jnp.inner
@@ -440,37 +460,23 @@ def _pdf_multivariate_skew_t(y, vec_xi, mat_diag_omega, mat_omega_bar, vec_alpha
     return (1 / det_omega_diag) * f_z
 
 
-def log_likelihood_normalized_multivariate_skew_t(
-    mat_omega_bar, vec_alpha, nu, data: ArrayLike
-) -> DTypeLike:
-    """
-    Negative of log-likelihood of ST_d(0, \bar{\Omega}, \alpha, \nu) observations.
-
-    Params
-    ------
-    data: N x d matrix containing the observations.
-    """
-    _func = vmap(_pdf_normalized_multivariate_skew_t, in_axes=[0, None, None, None])
-
-    summands = _func(data, mat_omega_bar, vec_alpha, nu)
-    loglik_summands = jnp.log(summands)
-
-    loglik = jnp.sum(loglik_summands)
-    return -1.0 * loglik
-
-
-def _sample_normalized_multivariate_skew_t(
-    key: KeyArrayLike, mat_omega_bar: ArrayLike, vec_alpha: ArrayLike, nu: float
+def _sample_multivariate_skew_t(
+    key: KeyArrayLike,
+    vec_xi: ArrayLike,
+    mat_diag_omega: ArrayLike,
+    mat_omega_bar: ArrayLike,
+    vec_alpha: ArrayLike,
+    nu: float,
 ) -> Array:
     """
-    Sample a ST_d(0, \bar{\Omega}, \alpha, \nu) random vector by using its
+    Sample a ST_d(\\xi, \\Omega, \\alpha, \\nu) random vector by using its
     stochastic representation. See Azzalini (2014, Section 6.2.1).
 
-    Note and recall if Z \sim ST_d(0, \bar{\Omega}, \alpha, \nu), then it is
+    Note and recall if Z \\sim ST_d(0, \\bar{\Omega}, \\alpha, \\nu), then it is
     defined by
     Z = V^{-1/2} Z_0
-    where Z_0 \sim SN_d(0, \bar{\Omega}, \alpha) and it is independent of V,
-    of which V \sim \chi_\nu^{2} / \nu.
+    where Z_0 \\sim SN_d(0, \\bar{\\Omega}, \\alpha) and it is independent of V,
+    of which V \\sim \\chi_\\nu^{2} / \\nu. Return Y = \\xi + \\omega Z.
     """
     chisquare = jax.random.chisquare
     sqrt = jnp.sqrt
@@ -488,18 +494,20 @@ def _sample_normalized_multivariate_skew_t(
 
     # Construct Skew-t random vector
     z = z0 / sqrt(v)
-    return z
+
+    y = vec_xi + mat_diag_omega @ z
+    return y
 
 
-def _closed_form_standardized_multivariate_skew_t_params(
+def _calc_closed_form_standardized_multivariate_skew_t_params(
     vec_alpha: ArrayLike, nu: float
 ) -> tp.Tuple[Array]:
     """
     Return the closed form expressions for the parameters
-    (\\xi_X, \\Omega_X, \\alpha_X, \\nu) of the
+    (\\xi_X, \\omega_X, \\Omega_X, \\alpha_X, \\nu) of the
     standardized multivariate Skew-t distribution.
 
-    In particular, let Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \\nu)
+    In particular, let Y \\sim ST_d(\\xi, \\bar{\\Omega}, \\alpha, \\nu)
     and construct X = c + A^{\\top} Y which has
     X \\sim ST_d(\\xi_X, \\Omega_X, \\alpha_X, \\nu), where we set
     A = \\Sigma_Y^{-1/2} and c = -\\Sigma_Y^{-1/2} \\mu_Y and
@@ -508,34 +516,48 @@ def _closed_form_standardized_multivariate_skew_t_params(
     dim = jnp.size(vec_alpha)
     identity = jnp.identity
     transpose = jnp.transpose
+    inv = jnp.linalg.inv
     diag = jnp.diag
 
-    # Compute the mean vector and covariance matrix of
-    # Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
-    # where we fix \bar{\Omega} = I_d
+    # We fix \bar{\Omega} = I_d
     mat_omega_bar = identity(dim)
-
-    # \Sigma_Y
-    mat_sigma_Y = cov_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-    )
-
-    # Get A = \Sigma_Y^{-1/2}
-    mat_A = calc_psd_matrix_invsqrt(mat_sigma_Y)
-
-    # c = -\Sigma_Y^{-1/2} \mu_Y
-    vec_mu_Y = mean_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-    )
-    vec_c = -1 * mat_A @ vec_mu_Y
+    mat_diag_omega = identity(dim)
 
     # \mu_Z = b_{\nu} \delta
+    mu_Z = mean_normalized_multivariate_skew_normal(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
+    )
     vec_delta = _calc_skew_delta(vec_alpha=vec_alpha, mat_omega_bar=mat_omega_bar)
-    vec_delta = vec_delta.reshape(dim, 1)
-    b_nu = _calc_skew_b(nu=nu)
-    mu_Z = b_nu * vec_delta
 
-    # We have \Omega_X = A^{\top} A^{\top} = \Sigma_Y^{-1}.
+    # Compute the mean vector of Y \sim ST_d(\xi, \bar{\Omega}, \alpha, \nu)
+    # Note that \mu_Y = \xi + \omega\mu_Z. In particular, by picking
+    # \xi = -\omega\mu_Z, we immediately get \mu_Y = 0.
+    vec_xi = -1 * mat_diag_omega @ mu_Z
+    vec_mu_Y = mean_multivariate_skew_t(
+        vec_xi=vec_xi,
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
+    )
+
+    # \Sigma_Y
+    mat_sigma_Y = cov_multivariate_skew_t(
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
+    )
+
+    # Get decomposition \Sigma_Y = B^{\top}B
+    mat_B = calc_psd_matrix_decomposition(mat_sigma_Y, upper=True)
+
+    # c = -A^{\top}\mu_Y, where we set A = B^{-1}
+    # Note that c should be 0.
+    mat_A = inv(mat_B)
+    vec_c = -1.0 * transpose(mat_A) @ vec_mu_Y
+
+    # We have \Omega_X = A^{\top} \Omega A = \Sigma_Y^{-1}.
     # Apply the Sherman-Morrison formula to compute the inverse.
     mat_omega_X = ((nu - 2) / nu) * (
         identity(dim)
@@ -547,9 +569,9 @@ def _closed_form_standardized_multivariate_skew_t_params(
 
     # Decompose \bar{\Omega}_X = \omega_X^{-1} \Omega_X \omega_X^{-1}
     # where \omega_X = (diag \Omega_X)^{1/2}
-    mat_diag_omega_X = diag(diag(mat_omega_X) ** (1 / 2))
-    mat_diag_omega_inv_X = diag(diag(mat_omega_X) ** (-1 / 2))
-    mat_omega_bar_X = mat_diag_omega_inv_X @ mat_omega_X @ mat_diag_omega_inv_X
+    mat_diag_omega_X, mat_omega_bar_X = _diag_decompose_covariance_to_correlation(
+        mat_omega_X
+    )
 
     # Compute \alpha_X
     vec_alpha_X = (
@@ -558,13 +580,167 @@ def _closed_form_standardized_multivariate_skew_t_params(
         @ mat_A
         @ vec_delta
     )
+    vec_alpha_X = vec_alpha_X.reshape(dim)
 
     # Compute \xi_X
     vec_xi_X = vec_c
 
-    return (vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu)
+    return vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu
 
 
+def pdf_closedform_standardized_transformation_multivariate_skew_t(x, vec_alpha, nu):
+    """
+    Suppose Y \\sim ST_d(\\xi, \\Omega, \\alpha, \\nu). Consider the affine
+    transform X = c + A^{\\top}Y \\sim ST_d(\\xi_X, \\Omega_X, \\alpha_X, \\nu).
+    In particular, pick:
+    \\xi = -\\omega \\mu_Z  (so that \\mu_Y = 0)
+    \\Omega = I_d
+
+    Moreover, use the decomposition \\Sigma_Y = BB^{\\top}. Pick
+    A = B^{-1}. Then set c = -A^{\\top}\\mu_Y = 0. Thus we have
+    X = A^{\\top} Y.
+    """
+
+    # Calculate parameters
+    vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu = (
+        _calc_closed_form_standardized_multivariate_skew_t_params(
+            vec_alpha=vec_alpha, nu=nu
+        )
+    )
+
+    # Return the pdf
+    return _pdf_multivariate_skew_t(
+        x,
+        vec_xi=vec_xi_X,
+        mat_diag_omega=mat_diag_omega_X,
+        mat_omega_bar=mat_omega_bar_X,
+        vec_alpha=vec_alpha_X,
+        nu=nu,
+    )
+
+
+def pdf_oldschool_standardized_transformation_multivariate_skew_t(x, vec_alpha, nu):
+    """
+    Density based on change-of-variables. That is, suppose Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \\nu).
+    Let X = B(Y - \\mu_Y), where \\Sigma_Y = BB^{\top}.
+    """
+    det = jscipy.linalg.det
+    inv = jnp.linalg.inv
+    abs = jnp.abs
+    identity = jnp.identity
+
+    dim = jnp.size(x)
+
+    # Compute the mean vector and covariance matrix of
+    # Y \sim ST_d(\xi, \bar{\Omega}, \alpha, \nu),
+    # where we fix \bar{\Omega} = I_d and
+    # \xi = -\mu_Y so that \E[Y] = 0
+    mat_omega_bar = identity(dim)
+    mat_diag_omega = identity(dim)
+    mu_Z = mean_normalized_multivariate_skew_normal(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
+    )
+    vec_xi = -mat_diag_omega @ mu_Z
+
+    # Compute \Sigma_Y
+    mat_sigma_Y = cov_multivariate_skew_t(
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
+    )
+
+    # Decomposition \Sigma_Y = BB^{\top}.
+    mat_B = calc_psd_matrix_decomposition(mat_sigma_Y, upper=False)
+
+    # Compute det(B)
+    det_B = det(mat_B)
+
+    # Return the pdf of X = B^{-1}(Y - \mu_Y) = B^{-1}Y.
+    _pdf = abs(det_B) * _pdf_multivariate_skew_t(
+        mat_B @ x,
+        vec_xi=vec_xi,
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
+    )
+    return _pdf
+
+
+#
+#
+#
+#
+# def pdf_closedform_standardized_transformation_multivariate_skew_t(x, vec_alpha, nu):
+#     vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu = (
+#         _calc_closed_form_standardized_multivariate_skew_t_params(
+#             vec_alpha=vec_alpha, nu=nu
+#         )
+#     )
+#
+#     return _pdf_multivariate_skew_t(
+#         x,
+#         vec_xi=vec_xi_X,
+#         mat_diag_omega=mat_diag_omega_X,
+#         mat_omega_bar=mat_omega_bar_X,
+#         vec_alpha=vec_alpha_X,
+#         nu=nu,
+#     )
+#
+#
+# def pdf_standardized_transformation_multivariate_skew_t(x, vec_alpha, nu):
+#     """
+#     Density of X = c + A^{\\top} Y, where Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \\nu),
+#     such that c = -\\Sigma_Y^{-1/2} \\mu_Y, A = \\Sigma_Y^{-1/2}, \\bar{\\Omega} = I_d.
+#
+#     In other words, X will be skew-t multivariate distribution but with mean zero
+#     and identity variance-covariance.
+#     """
+#     transpose = jnp.transpose
+#     inv = jnp.linalg.inv
+#
+#     dim = jnp.size(x)
+#
+#     # Compute the mean vector and covariance matrix of
+#     # Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu),
+#     # where we fix \bar{\Omega} = I_d
+#     mat_omega_bar = jnp.identity(dim)
+#
+#     # Compute \Sigma_Y
+#     mat_sigma_Y = cov_normalized_multivariate_skew_t(
+#         mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+#     )
+#
+#     # Get decomposition \Sigma_Y = B^{\top}B
+#     mat_B = calc_psd_matrix_decomposition(mat_sigma_Y, upper=True)
+#
+#     # Set A = B^{-1}
+#     mat_A = inv(mat_B)
+#
+#     # c = -A\mu_Y
+#     vec_mu_Y = mean_normalized_multivariate_skew_t(
+#         mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+#     )
+#     vec_c = -1 * transpose(mat_A) @ vec_mu_Y
+#
+#     vec_xi = jnp.repeat(0.0, dim)
+#     mat_diag_omega = jnp.identity(dim)
+#     pdf_val = _pdf_affine_transformation_multivariate_skew_normal(
+#         x,
+#         vec_c=vec_c,
+#         mat_A=mat_A,
+#         vec_xi=vec_xi,
+#         mat_diag_omega=mat_diag_omega,
+#         mat_omega_bar=mat_omega_bar,
+#         vec_alpha=vec_alpha,
+#         nu=nu,
+#     )
+#     return pdf_val
+#
+#
+#
+#
 def sample_standardized_multivariate_skew_t(
     key: KeyArrayLike, vec_alpha: ArrayLike, nu: float
 ):
@@ -573,65 +749,297 @@ def sample_standardized_multivariate_skew_t(
     identity variance.
 
     Specifically, draw a sample of the random vector X = c + A^{\\top} Y,
-    where Y \\sim ST_d(0, \\bar{\\Omega}, \\alpha, \nu), and
+    where Y \\sim ST_d(\\xi, \\bar{\\Omega}, \\alpha, \\nu), and
     where we set \\bar{\\Omega} = I_d, c = -\\Sigma_Y^{-1/2} \\mu_Y,
     and A = \\Sigma_Y^{-1/2}.
     """
+    identity = jnp.identity
+    inv = jnp.linalg.inv
 
     dim = jnp.size(vec_alpha)
 
-    # Draw Y \sim ST_d(0, \bar{\Omega}, \alpha, \nu)
-    mat_omega_bar = jnp.identity(dim)
-    vec_Y = _sample_normalized_multivariate_skew_t(
-        key=key, mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+    mat_omega_bar = identity(dim)
+    mat_diag_omega = identity(dim)
+
+    # Draw Y \sim ST_d(\xi, \bar{\Omega}, \alpha, \nu)
+    # but fixing \xi = -\mu_Y = -\omega\mu_Z, so that
+    # \E[Y] = 0
+    mu_Z = mean_normalized_multivariate_skew_normal(
+        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
+    )
+    vec_xi = -1 * mat_diag_omega @ mu_Z
+    vec_Y = _sample_multivariate_skew_t(
+        key=key,
+        vec_xi=vec_xi,
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
     )
 
-    # Compute the mean and variance of Y
-    vec_mu_Y = mean_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+    # Compute the mean of Y (i.e. should be 0)
+    vec_mu_Y = mean_multivariate_skew_t(
+        vec_xi=vec_xi,
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
     )
-    mat_cov_Y = cov_normalized_multivariate_skew_t(
-        mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+
+    # Compute the variance of Y
+    mat_sigma_Y = cov_multivariate_skew_t(
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
     )
 
-    # Compute A = \Sigma_Y^{-1/2} and c = -\Sigma_Y^{-1/2} \mu_Y
-    mat_A = calc_psd_matrix_invsqrt(mat_X=mat_cov_Y)
-    vec_c = -1 * mat_A @ vec_mu_Y
+    # Decomposition \Sigma_Y = BB^{\top}.
+    mat_B = calc_psd_matrix_decomposition(mat_sigma_Y, upper=False)
 
-    # Compute X = c + A^{\top} Y
-    vec_X = vec_c + mat_A @ vec_Y
-
+    vec_X = inv(mat_B) @ vec_Y
     return vec_X
 
 
-def mean_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha, nu):
+def sample_multivariate_skew_t(
+    key: KeyArrayLike,
+    vec_xi: Array,
+    mat_diag_omega: ArrayLike,
+    mat_omega_bar: ArrayLike,
+    vec_alpha: ArrayLike,
+    nu: float,
+) -> Array:
     """
-    First moment of a ST_d(0, \bar{\Omega}, \alpha, \nu) random vector.
+    Draw Y = \\xi + \omega Z \\sim ST_d(\\xi, \\Omega, \\alpha, \\vec), where
+    Z is a normalized skew-t random vector.
+    """
+    dim = jnp.size(vec_xi)
+
+    # Sample Z \sim ST_d(0, \bar{\Omega}, \alpha, \nu).
+    vec_xi = jnp.repeat(0.0, dim)
+    vec_Z = _sample_multivariate_skew_t(
+        key=key,
+        vec_xi=vec_xi,
+        mat_diag_omega=mat_diag_omega,
+        mat_omega_bar=mat_omega_bar,
+        vec_alpha=vec_alpha,
+        nu=nu,
+    )
+    vec_Z = vec_Z.reshape((dim, 1))
+
+    # Construct Y = \xi + \omega Z
+    vec_xi = vec_xi.reshape((dim, 1))
+    vec_Y = vec_xi + mat_diag_omega @ vec_Z
+
+    vec_Y = vec_Y.reshape(dim)
+    return vec_Y
+
+
+def log_likelihood_normalized_multivariate_skew_t(
+    mat_omega_bar, vec_alpha, nu, data: ArrayLike
+) -> DTypeLike:
+    """
+    Negative of log-likelihood of ST_d(0, \\bar{\Omega}, \\alpha, \\nu) observations.
+
+    Params
+    ------
+    data: N x d matrix containing the observations.
+    """
+    _func = vmap(_pdf_normalized_multivariate_skew_t, in_axes=[0, None, None, None])
+
+    summands = _func(data, mat_omega_bar, vec_alpha, nu)
+    loglik_summands = jnp.log(summands)
+
+    loglik = jnp.sum(loglik_summands)
+    return -1.0 * loglik
+
+
+#
+#
+# def log_likelihood_standardized_multivariate_skew_t(
+#     vec_alpha, nu, data: ArrayLike, penalize: bool = True
+# ) -> DTypeLike:
+#     """
+#     Negative of log-likelihood of standardized ST_d observations.
+#
+#     Params
+#     ------
+#     data: N x d matrix containing the observations.
+#     """
+#     _func = vmap(
+#         pdf_standardized_transformation_multivariate_skew_t,
+#         in_axes=[0, None, None],
+#     )
+#
+#     summands = _func(data, vec_alpha, nu)
+#     loglik_summands = jnp.log(summands)
+#
+#     neg_loglik = -1 * jnp.sum(loglik_summands)
+#
+#     if penalize:
+#         dim = jnp.size(vec_alpha)
+#         mat_omega_bar = jnp.identity(dim)
+#         penalty = pmle_penalty_term_skew_t(vec_alpha, mat_omega_bar, nu)
+#         objfun = neg_loglik + penalty
+#
+#     else:
+#         objfun = neg_loglik
+#
+#     return objfun
+#
+#
+def log_likelihood_closedform_standardized_multivariate_skew_t(
+    vec_alpha, nu, data: ArrayLike
+) -> DTypeLike:
+    """
+    Negative of log-likelihood of standardized ST_d observations.
+
+    Params
+    ------
+    data: N x d matrix containing the observations.
+    """
+    _func = vmap(
+        pdf_closedform_standardized_transformation_multivariate_skew_t,
+        in_axes=[0, None, None],
+    )
+
+    summands = _func(data, vec_alpha, nu)
+    loglik_summands = jnp.log(summands)
+
+    loglik = jnp.sum(loglik_summands)
+    return -1.0 * loglik
+
+
+#
+#
+def _calc_alpha_star(vec_alpha, mat_omega_bar):
+    """
+    Calculate \\alpha_* = \\alpha^{\\top} \\bar{\\Omega} \\alpha
+    """
+    dim = jnp.size(vec_alpha)
+
+    alpha_star = jnp.transpose(vec_alpha) @ mat_omega_bar @ vec_alpha
+    return alpha_star
+
+
+#
+#
+def _pmle_penalty_func(c1, c2, alpha_star):
+    return c1 * jnp.log(1 + c2 * alpha_star**2)
+
+
+def _pmle_c1_func(e2):
+    return 1 / (4 * e2)
+
+
+def _pmle_c2_func(e1, e2):
+    return e2 / e1
+
+
+def pmle_penalty_term_skew_normal(vec_alpha, mat_omega_bar):
+    """
+    Penalty term for PMLE procedure of Azzalini and
+    Arellano-Valle (2013), eq (14).
+    """
+    e1 = 1 / 3
+    e2 = 0.2854166
+
+    c1 = _pmle_c1_func(e2)
+    c2 = _pmle_c2_func(e1, e2)
+
+    alpha_star = _calc_alpha_star(vec_alpha, mat_omega_bar)
+
+    penalty = _pmle_penalty_func(c1, c2, alpha_star)
+    return penalty
+
+
+def pmle_penalty_term_skew_t(vec_alpha, mat_omega_bar, nu):
+    """
+    Penalty term for PMLE procedure of Azzalini and
+    Arellano-Valle (2013).
+    """
+    g_nu = (nu + 2) * (nu + 3) / (nu + 1) ** 2
+
+    e1nu = g_nu / 3
+
+    e2 = 0.2854166
+    e2nu = e2 * (1 + 4 / (nu + np.euler_gamma))
+
+    c1 = _pmle_c1_func(e2)
+    c2 = _pmle_c2_func(e1nu, e2nu)
+
+    alpha_star = _calc_alpha_star(vec_alpha, mat_omega_bar)
+
+    penalty = _pmle_penalty_func(c1, c2, alpha_star)
+    return penalty
+
+
+def log_likelihood_oldschool_standardized_multivariate_skew_t(
+    vec_alpha, nu, data: ArrayLike, penalize: bool = True
+) -> DTypeLike:
+    """
+    Negative of log-likelihood of standardized ST_d observations.
+
+    Params
+    ------
+    data: N x d matrix containing the observations.
+    """
+    _func = vmap(
+        pdf_oldschool_standardized_transformation_multivariate_skew_t,
+        in_axes=[0, None, None],
+    )
+
+    summands = _func(data, vec_alpha, nu)
+    loglik_summands = jnp.log(summands)
+
+    neg_loglik = -1 * jnp.sum(loglik_summands)
+
+    if penalize:
+        dim = jnp.size(vec_alpha)
+        mat_omega_bar = jnp.identity(dim)
+        penalty = pmle_penalty_term_skew_t(vec_alpha, mat_omega_bar, nu)
+        objfun = neg_loglik + penalty
+
+    else:
+        objfun = neg_loglik
+
+    return objfun
+
+
+#
+#
+def mean_multivariate_skew_t(vec_xi, mat_diag_omega, mat_omega_bar, vec_alpha, nu):
+    """
+    First moment of a ST_d(\\xi, \\Omega, \\alpha, \\nu) random vector.
     """
     if nu <= 1:
         raise ValueError("nu <= 1 implies first moment is undefined")
 
-    mu_z = mean_normalized_multivariate_skew_normal(
+    mu_Z = mean_normalized_multivariate_skew_normal(
         mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
     )
-    return mu_z
+    return vec_xi + mat_diag_omega @ mu_Z
 
 
-def cov_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha, nu):
+def cov_multivariate_skew_t(mat_diag_omega, mat_omega_bar, vec_alpha, nu):
     """
-    Covariance matrix of a ST_d(0, \bar{\Omega}, \alpha, \nu) random vector.
+    Covariance matrix of a ST_d(\\xi, \\Omega, \\alpha, \\nu) random vector.
     """
     if nu <= 2:
         raise ValueError("nu <= 2 implies second moment is undefined")
 
     dim = jnp.size(vec_alpha)
 
-    mu_z = mean_normalized_multivariate_skew_normal(
+    mu_Z = mean_normalized_multivariate_skew_normal(
         mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha
     )
-    mu_z = mu_z.reshape(dim, 1)
+    mu_Z = mu_Z.reshape(dim, 1)
 
-    mat_sigma = nu / (nu - 2) * mat_omega_bar - mu_z @ jnp.transpose(mu_z)
+    mat_omega = mat_diag_omega @ mat_omega_bar @ mat_diag_omega
+    mat_sigma = (
+        nu / (nu - 2) * mat_omega
+        - mat_diag_omega @ mu_Z @ jnp.transpose(mu_Z) @ mat_diag_omega
+    )
     return mat_sigma
 
 
@@ -639,60 +1047,127 @@ key = random.key(12345)
 
 dim = 2
 nu = 5
-num_sample = int(1e2)
+num_sample = int(2e4)
 vec_alpha_true = (1 / 2) * jax.random.uniform(key, shape=(dim,)) - (1 / 4)
+# vec_alpha_true = jnp.repeat(5.0, dim)
 # vec_alpha_true = jnp.repeat(0.0, dim)
 mat_omega_bar = jnp.identity(dim)
 
 
-lst_data = []
-for i in range(num_sample):
-    key, subkey = random.split(key)
-    _ = _sample_normalized_multivariate_skew_t(key, mat_omega_bar, vec_alpha_true, nu)
-    lst_data.append(_)
+# lst_data = []
+# for i in range(num_sample):
+#     key, subkey = random.split(key)
+#     _ = _sample_normalized_multivariate_skew_t(key, mat_omega_bar, vec_alpha_true, nu)
+#     lst_data.append(_)
+# data = jnp.array(lst_data)
 
-data = jnp.array(lst_data)
+# key, subkey = random.split(key)
+# vec_c = jnp.repeat(0.0, dim)
+# _ = 2 * jax.random.uniform(key, shape=(dim, dim)) - 1
+# mat_A = 0.5 * (_ + jnp.transpose(_))
+# key, subkey = random.split(key)
+# vec_xi = 2 * jax.random.uniform(key, shape=(dim,)) - 1
+# mat_diag_omega = jnp.identity(dim)
+# mat_omega_bar = jnp.identity(dim)
+#
 
-key, subkey = random.split(key)
-vec_c = jnp.repeat(0.0, dim)
-_ = 2 * jax.random.uniform(key, shape=(dim, dim)) - 1
-mat_A = 0.5 * (_ + jnp.transpose(_))
-key, subkey = random.split(key)
-vec_xi = 2 * jax.random.uniform(key, shape=(dim,)) - 1
+# vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu = (
+#     _calc_closed_form_standardized_multivariate_skew_t_params(
+#         vec_alpha=vec_alpha_true, nu=nu
+#     )
+# )
+# _func = vmap(sample_multivariate_skew_t, in_axes=[0, None, None, None, None, None])
+# subkeys = random.split(key, num_sample)
+# subkeys = jnp.array(subkeys)
+# data_sample_t = _func(
+#     subkeys, vec_xi_X, mat_diag_omega_X, mat_omega_bar_X, vec_alpha_X, nu
+# )
+# mean_sample_t = data_sample_t.mean(axis=0)
+# cov_sample_t = jnp.cov(data_sample_t, rowvar=False)
+
+
+# _func = vmap(sample_standardized_multivariate_skew_t, in_axes=[0, None, None])
+# subkeys = random.split(key, num_sample)
+# subkeys = jnp.array(subkeys)
+# data_sample_t = _func(subkeys, vec_alpha_true, nu)
+# mean_sample_t = data_sample_t.mean(axis=0)
+# cov_sample_t = jnp.cov(data_sample_t, rowvar=False)
+
+
+# xx = np.linspace(-5, 5, 100)
+# yy = [
+#     pdf_oldschool_standardized_transformation_multivariate_skew_t(
+#         jnp.array([x]), vec_alpha_true, nu
+#     )
+#     for x in xx
+# ]
+# yy = np.array(yy)
+# zz = [
+#     pdf_closedform_standardized_transformation_multivariate_skew_t(
+#         jnp.array([x]), vec_alpha_true, nu
+#     )
+#     for x in xx
+# ]
+# zz = np.array(zz)
+# plt.plot(xx, yy, c= 'b')
+# plt.plot(xx, zz, c='r')
+# plt.show()
+#
+# breakpoint()
+
+# _func = vmap(sample_multivariate_skew_t, in_axes=[0, None, None, None, None, None])
+_func = vmap(sample_standardized_multivariate_skew_t, in_axes=[0, None, None])
+subkeys = random.split(key, num_sample)
+subkeys = jnp.array(subkeys)
+vec_xi = jnp.repeat(0, dim)
 mat_diag_omega = jnp.identity(dim)
 mat_omega_bar = jnp.identity(dim)
-
-_closed_form_standardized_multivariate_skew_t_params(vec_alpha=vec_alpha_true, nu=nu)
-
-sample_standardized_multivariate_skew_t(key=key, vec_alpha=vec_alpha_true, nu=nu)
-
-pdf_standardized_transformation_multivariate_skew_normal(
-    x=data[0, :], vec_alpha=vec_alpha_true, nu=nu
-)
-
-_pdf_affine_transformation_multivariate_skew_normal(
-    x=data[0, :],
-    vec_c=vec_c,
-    mat_A=mat_A,
-    vec_xi=vec_xi,
-    mat_diag_omega=mat_diag_omega,
-    mat_omega_bar=mat_omega_bar,
-    vec_alpha=vec_alpha_true,
-    nu=nu,
-)
-
-# learning_rate = 1e-2
-# optimizer = optax.adam(learning_rate)
+data_sample_t = _func(subkeys, vec_alpha_true, nu)
+# data_sample_t = _func(
+#     subkeys, vec_xi, mat_diag_omega, mat_omega_bar, vec_alpha_true, nu
+# )
+mean_sample_t = data_sample_t.mean(axis=0)
+cov_sample_t = jnp.cov(data_sample_t, rowvar=False)
+# true_mean_t = mean_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha_true, nu)
+# true_cov_t = cov_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha_true, nu)
 
 
-compute_loss = lambda vec_alpha: log_likelihood_normalized_multivariate_skew_t(
-    mat_omega_bar, vec_alpha, nu, data
-)
-
-# bears = jax.scipy.optimize.minimize(
-#     compute_loss, x0=jnp.array([0.2, 0.2]), method="BFGS"
+# compute_loss = lambda vec_alpha: log_likelihood_normalized_multivariate_skew_t(
+#     mat_omega_bar, vec_alpha, nu, data
 # )
 
+penalize = False
+compute_loss_standardized_mvar_skew_t = (
+    lambda vec_alpha: log_likelihood_oldschool_standardized_multivariate_skew_t(
+        vec_alpha, nu, data_sample_t, penalize
+    )
+)
+# compute_loss_standardized_mvar_skew_t = (
+#     lambda vec_alpha: log_likelihood_oldschool_standardized_multivariate_skew_t(
+#         vec_alpha, nu, data_sample_t, penalize
+#     )
+# )
+
+# xx = np.linspace(-0.5, 0.5, 100)
+# yy = [compute_loss_standardized_mvar_skew_t(jnp.array([x])) for x in xx]
+# yy = np.array(yy)
+#
+# plt.plot(xx, yy)
+# plt.show()
+
+x0 = jnp.repeat(-0.1, dim)
+optres = jscipy.optimize.minimize(
+    compute_loss_standardized_mvar_skew_t, x0=x0, method="BFGS"
+)
+
+
+# compute_loss_standardized_mvar_skew_t = (
+#     lambda vec_alpha: log_likelihood_closedform_standardized_multivariate_skew_t(
+#         vec_alpha, nu, data_sample_t
+#     )
+# )
+
+breakpoint()
 
 start_learning_rate = 1e-1
 transition_steps = 1000
@@ -710,43 +1185,48 @@ gradient_transform = optax.chain(
 )
 
 key, subkey = random.split(key)
-vec_alpha = 2 * jax.random.uniform(key, shape=(dim,)) - 1
-opt_state = gradient_transform.init(vec_alpha)
+# vec_alpha = jnp.repeat(0.0, dim)
+vec_alpha_init = optres.x
+vec_alpha = vec_alpha_init
+opt_state = gradient_transform.init(vec_alpha_init)
 
 num_loops = 100
-score = jax.grad(compute_loss)
+score = jax.grad(compute_loss_standardized_mvar_skew_t)
+
 for _ in range(num_loops):
     grads = score(vec_alpha)
     updates, opt_state = gradient_transform.update(grads, opt_state)
     vec_alpha = optax.apply_updates(vec_alpha, updates)
 
+est_mean_t = mean_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha, nu)
+est_cov_t = cov_normalized_multivariate_skew_t(mat_omega_bar, vec_alpha, nu)
 
-first_moment = jnp.mean(data, axis=0)
-
-mean_true = mean_normalized_multivariate_skew_t(
-    mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha_true, nu=nu
-)
-
-mean_est = mean_normalized_multivariate_skew_t(
-    mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-)
-
-cov_true = cov_normalized_multivariate_skew_t(
-    mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha_true, nu=nu
-)
-
-cov_est = cov_normalized_multivariate_skew_t(
-    mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
-)
-
-sample_cov = jnp.cov(data, rowvar=False)
-
-jnp.linalg.norm(vec_alpha_true - vec_alpha) / jnp.size(vec_alpha_true)
-
-jnp.linalg.norm(mean_true - mean_est)
-jnp.linalg.norm(mean_true - first_moment)
-
-jnp.linalg.norm(cov_true - cov_est)
-jnp.linalg.norm(cov_true - sample_cov)
-
-breakpoint()
+# first_moment = jnp.mean(data, axis=0)
+#
+# mean_true = mean_normalized_multivariate_skew_t(
+#     mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha_true, nu=nu
+# )
+#
+# mean_est = mean_normalized_multivariate_skew_t(
+#     mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+# )
+#
+# cov_true = cov_normalized_multivariate_skew_t(
+#     mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha_true, nu=nu
+# )
+#
+# cov_est = cov_normalized_multivariate_skew_t(
+#     mat_omega_bar=mat_omega_bar, vec_alpha=vec_alpha, nu=nu
+# )
+#
+# sample_cov = jnp.cov(data, rowvar=False)
+#
+# jnp.linalg.norm(vec_alpha_true - vec_alpha) / jnp.size(vec_alpha_true)
+#
+# jnp.linalg.norm(mean_true - mean_est)
+# jnp.linalg.norm(mean_true - first_moment)
+#
+# jnp.linalg.norm(cov_true - cov_est)
+# jnp.linalg.norm(cov_true - sample_cov)
+#
+# breakpoint()
