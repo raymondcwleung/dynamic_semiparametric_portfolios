@@ -22,7 +22,7 @@ import functools
 import jaxopt
 
 import numpy as np
-from numpy._typing import ArrayLike, NDArray
+from numpy._typing import NDArray
 import scipy
 import matplotlib.pyplot as plt
 
@@ -35,6 +35,29 @@ jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
 logger = logging.getLogger(__name__)
+
+DICT_PARAMS_MEAN = "dict_params_mean"
+DICT_PARAMS_Z = "dict_params_z"
+DICT_PARAMS_DCC_UVAR_VOL = "dict_params_dcc_uvar_vol"
+DICT_PARAMS_DCC_MVAR_COR = "dict_params_dcc_mvar_cor"
+
+# SGT parameters
+VEC_LBDA = "vec_lbda"
+VEC_P0 = "vec_p0"
+VEC_Q0 = "vec_q0"
+
+# Mean return parameters
+VEC_MU = "vec_mu"
+
+# Univariate volatilities parameters
+VEC_OMEGA = "vec_omega"
+VEC_BETA = "vec_beta"
+VEC_ALPHA = "vec_alpha"
+VEC_PSI = "vec_psi"
+
+# Multivariate DCC parameters
+VEC_DELTA = "vec_delta"
+MAT_QBAR = "mat_qbar"
 
 
 def _generate_random_cov_mat(key: KeyArrayLike, dim: int) -> Array:
@@ -56,7 +79,7 @@ def _calc_demean_returns(mat_returns: Array, vec_mu: NDArray) -> Array:
 
 def _calc_unexpected_excess_rtn(mat_Sigma: Array, vec_z: Array) -> Array:
     """
-    Return \\epsilon = \\Sigma^{1/2} z.
+    Return \\epsilon_t = \\Sigma_t^{1/2} z_t.
 
     Given a covariance matrix \\Sigma and an innovation
     vector z, return the unexpected excess returns vector
@@ -73,11 +96,12 @@ def _calc_normalized_unexpected_excess_rtn(
     vec_sigma: Array, vec_epsilon: Array
 ) -> Array:
     """
-    Return u = D^{-1} \\epsilon
+    Return u_t = D_t^{-1} \\epsilon_t
     """
     mat_inv_D = jnp.diag(1 / vec_sigma)
+    vec_u = mat_inv_D @ vec_epsilon
 
-    return mat_inv_D @ vec_epsilon
+    return vec_u
 
 
 def _calc_mat_Q(
@@ -273,7 +297,7 @@ def _calc_trajectory_mvar_cov(
     mat_epsilon: Array,
     mat_sigma: Array,
     mat_Q_0: Array,
-    vec_delta: Array,
+    vec_delta: NDArray,
     mat_Qbar: Array,
 ) -> Array:
     """
@@ -331,6 +355,16 @@ def _calc_trajectory_mvar_cov(
     return tns_Sigma
 
 
+def _calc_trajectory_normalized_unexp_returns(
+    mat_sigma: Array, mat_epsilon: Array
+) -> Array:
+    """
+    Calculate the trajectory of u_t = D_t^{-1}\\epsilon_t
+    """
+    mat_u = mat_epsilon / mat_sigma
+    return mat_u
+
+
 def simulate_returns(
     seed: int,
     dim: int,
@@ -375,42 +409,28 @@ def _calc_innovations(vec_epsilon: Array, mat_Sigma: Array) -> Array:
     return vec_z
 
 
-def calc_innovations(mat_epsilon: Array, tns_Sigma: Array) -> Array:
+def _calc_trajectory_innovations(mat_epsilon: Array, tns_Sigma: Array) -> Array:
     """
-    Calculate innovations z_t's over the full sample.
+    Calculate trajectory of innovations z_t's over the full sample.
     """
     _func = vmap(_calc_innovations, in_axes=[0, 0])
     mat_z = _func(mat_epsilon, tns_Sigma)
 
     return mat_z
 
-    # for tt in range(tns_Sigma.shape[0]):
-    #     print(f"tt = {tt}")
-    #     vec_epsilon = mat_epsilon[tt, :]
-    #     mat_Sigma = tns_Sigma[tt, :, :]
-    #     try:
-    #         _calc_innovations(vec_epsilon, mat_Sigma)
-    #     except:
-    #         breakpoint()
-    #
-    # return mat_z
 
-
-def dcc_loglik(
-    mat_returns,
-    vec_sigma_0,
-    mat_Q_0,
-    dict_params_mean,
-    dict_params_z,
-    dict_params_dcc_uvar_vol,
-    dict_params_dcc_mvar_cor,
-    neg_loglik: bool = True,
-):
+def _calc_trajectories(
+    mat_returns: Array,
+    vec_sigma_0: Array,
+    mat_Q_0: Array,
+    dict_params_mean: dict[str, NDArray],
+    dict_params_dcc_uvar_vol: dict[str, NDArray | Array],
+    dict_params_dcc_mvar_cor: dict[str, NDArray | Array],
+) -> tuple[Array, Array, Array, Array, Array]:
     """
-    (Negative) of the likelihood of the DCC-Asymmetric GARCH(1,1) model
+    Given parameters, return the trajectories {\\epsilon_t}, {\\sigma_{i,t}},
+    {\\Sigma_t}, {z_t}, {u_t}
     """
-    num_sample = mat_returns.shape[0]
-
     # Compute \epsilon_t = R_t - \mu_t
     mat_epsilon = _calc_demean_returns(mat_returns=mat_returns, **dict_params_mean)
 
@@ -428,7 +448,39 @@ def dcc_loglik(
     )
 
     # Calculate the innovations z_t
-    mat_z = calc_innovations(mat_epsilon=mat_epsilon, tns_Sigma=tns_Sigma)
+    mat_z = _calc_trajectory_innovations(mat_epsilon=mat_epsilon, tns_Sigma=tns_Sigma)
+
+    # Calculate the normalized unexpected returns u_t
+    mat_u = _calc_trajectory_normalized_unexp_returns(
+        mat_sigma=mat_sigma, mat_epsilon=mat_epsilon
+    )
+
+    return mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u
+
+
+def dcc_loglik(
+    mat_returns,
+    vec_sigma_0,
+    mat_Q_0,
+    dict_params_mean,
+    dict_params_z,
+    dict_params_dcc_uvar_vol,
+    dict_params_dcc_mvar_cor,
+    neg_loglik: bool = True,
+):
+    """
+    (Negative) of the likelihood of the DCC-Asymmetric GARCH(1,1) model
+    """
+    num_sample = mat_returns.shape[0]
+
+    _, _, tns_Sigma, mat_z, _ = _calc_trajectories(
+        mat_returns=mat_returns,
+        vec_sigma_0=vec_sigma_0,
+        mat_Q_0=mat_Q_0,
+        dict_params_mean=dict_params_mean,
+        dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol,
+        dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor,
+    )
 
     # Compute {\log\det \Sigma_t}
     _, vec_logdet_Sigma = jnp.linalg.slogdet(tns_Sigma)
@@ -455,27 +507,27 @@ if __name__ == "__main__":
     num_cores = 8
 
     # Parameters for the mean returns vector
-    dict_params_mean = {"vec_mu": rng.uniform(0, 1, dim) / 50}
+    dict_params_mean = {VEC_MU: rng.uniform(0, 1, dim) / 50}
 
     # Params for z \sim SGT
     dict_params_z_true = {
-        "vec_lbda": rng.uniform(-0.25, 0.25, dim),
-        "vec_p0": rng.uniform(2, 4, dim),
-        "vec_q0": rng.uniform(2, 4, dim),
+        VEC_LBDA: rng.uniform(-0.25, 0.25, dim),
+        VEC_P0: rng.uniform(2, 4, dim),
+        VEC_Q0: rng.uniform(2, 4, dim),
     }
 
     # Params for DCC -- univariate vols
     dict_params_dcc_uvar_vol_true = {
-        "vec_omega": rng.uniform(0, 1, dim) / 2,
-        "vec_beta": rng.uniform(0, 1, dim) / 3,
-        "vec_alpha": rng.uniform(0, 1, dim) / 10,
-        "vec_psi": rng.uniform(0, 1, dim) / 5,
+        VEC_OMEGA: rng.uniform(0, 1, dim) / 2,
+        VEC_BETA: rng.uniform(0, 1, dim) / 3,
+        VEC_ALPHA: rng.uniform(0, 1, dim) / 10,
+        VEC_PSI: rng.uniform(0, 1, dim) / 5,
     }
     # Params for DCC -- multivariate correlations
     dict_params_dcc_mvar_cor_true = {
         # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
-        "vec_delta": np.array([0.007, 0.930]),
-        "mat_Qbar": _generate_random_cov_mat(key=key, dim=dim) / 10,
+        VEC_DELTA: np.array([0.007, 0.930]),
+        MAT_QBAR: _generate_random_cov_mat(key=key, dim=dim) / 10,
     }
 
     mat_returns = simulate_returns(
@@ -490,27 +542,27 @@ if __name__ == "__main__":
 
     dict_params_mean_init_guess = {"vec_mu": rng.uniform(0, 1, dim) / 50}
     dict_params_z_init_guess = {
-        "vec_lbda": rng.uniform(-0.25, 0.25, dim),
-        "vec_p0": rng.uniform(2, 4, dim),
-        "vec_q0": rng.uniform(2, 4, dim),
+        VEC_LBDA: rng.uniform(-0.25, 0.25, dim),
+        VEC_P0: rng.uniform(2, 4, dim),
+        VEC_Q0: rng.uniform(2, 4, dim),
     }
     dict_params_dcc_uvar_vol_init_guess = {
-        "vec_omega": rng.uniform(0, 1, dim) / 2,
-        "vec_beta": rng.uniform(0, 1, dim) / 3,
-        "vec_alpha": rng.uniform(0, 1, dim) / 10,
-        "vec_psi": rng.uniform(0, 1, dim) / 5,
+        VEC_OMEGA: rng.uniform(0, 1, dim) / 2,
+        VEC_BETA: rng.uniform(0, 1, dim) / 3,
+        VEC_ALPHA: rng.uniform(0, 1, dim) / 10,
+        VEC_PSI: rng.uniform(0, 1, dim) / 5,
     }
     # Params for DCC -- multivariate correlations
     dict_params_dcc_mvar_cor_init_guess = {
-        "vec_delta": np.array([0.05, 0.530]),
-        "mat_Qbar": _generate_random_cov_mat(key=key, dim=dim) / 10,
+        VEC_DELTA: np.array([0.05, 0.530]),
+        MAT_QBAR: _generate_random_cov_mat(key=key, dim=dim) / 10,
     }
 
     dict_params_init_guess = {
-        "dict_params_mean": dict_params_mean_init_guess,
-        "dict_params_z": dict_params_z_init_guess,
-        "dict_params_dcc_uvar_vol": dict_params_dcc_uvar_vol_init_guess,
-        "dict_params_dcc_mvar_cor": dict_params_dcc_mvar_cor_init_guess,
+        DICT_PARAMS_MEAN: dict_params_mean_init_guess,
+        DICT_PARAMS_Z: dict_params_z_init_guess,
+        DICT_PARAMS_DCC_UVAR_VOL: dict_params_dcc_uvar_vol_init_guess,
+        DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_init_guess,
     }
 
     # Initial {\sigma_{i,0}}
@@ -522,7 +574,7 @@ if __name__ == "__main__":
     key, _ = random.split(key)
     mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
 
-    def _make_dict_params_z(x, dim) -> tp.Dict[str, NDArray]:
+    def _make_dict_params_z(x, dim) -> tuple[bool, tp.Dict[str, NDArray]]:
         """
         Take a vector x and split them into parameters related to the
         z_t \\sim SGT distribution
@@ -533,53 +585,157 @@ if __name__ == "__main__":
             )
 
         dict_params_z = {
-            "vec_lbda": x[0:dim],
-            "vec_p0": x[dim : 2 * dim],
-            "vec_q0": x[2 * dim :],
+            VEC_LBDA: x[0:dim],
+            VEC_P0: x[dim : 2 * dim],
+            VEC_Q0: x[2 * dim :],
         }
-        return dict_params_z
 
-    def _make_dict_params_dcc_uvar_vol(x, dim) -> tp.Dict[str, NDArray]:
+        valid_params = _check_params_z(dim=dim, dict_params_z=dict_params_z)
+
+        return valid_params, dict_params_z
+
+    def _make_dict_params_dcc_uvar_vol(x, dim) -> tuple[bool, tp.Dict[str, NDArray]]:
         """
         Take a vector x and split them into parameters related to the
         univariate GARCH processes.
         """
-        if jnp.size(x) != 4 * dim:
-            raise ValueError(
-                "Total number of parameters for the univariate GARCH processes is incorrect."
-            )
-
         dict_params_dcc_uvar_vol = {
-            "vec_omega": x[0:dim],
-            "vec_beta": x[dim : 2 * dim],
-            "vec_alpha": x[2 * dim : 3 * dim],
-            "vec_psi": x[3 * dim :],
+            VEC_OMEGA: x[0:dim],
+            VEC_BETA: x[dim : 2 * dim],
+            VEC_ALPHA: x[2 * dim : 3 * dim],
+            VEC_PSI: x[3 * dim :],
         }
-        return dict_params_dcc_uvar_vol
 
-    def _make_dict_params_dcc_mvar_cor(x, dim) -> tp.Dict[str, NDArray]:
+        valid_params = _check_params_dcc_uvar_vol(
+            dim=dim, dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol
+        )
+
+        return valid_params, dict_params_dcc_uvar_vol
+
+    def _make_dict_params_dcc_mvar_cor(
+        x,
+        dim,
+        mat_returns,
+        vec_sigma_0,
+        mat_Q_0,
+        dict_params_mean,
+        dict_params_dcc_uvar_vol,
+        dict_params_dcc_mvar_cor,
+    ) -> tuple[bool, tp.Dict[str, NDArray]]:
         """
         Take a vector x and split them into parameters related to the
         DCC process.
         """
-        if jnp.size(x) != dim + dim * (dim + 1) / 2:
+        if jnp.size(x) != 2:
             raise ValueError(
                 "Total number of parameters for the DCC process is incorrect."
             )
 
-        # Special treatment for stacking the parameters
-        # into \bar{Q}
-        vech_Qbar = x[dim:]
-        lower_mask = np.tri(dim, dim, dtype=bool)
-        _tmp_mat = jnp.zeros((dim, dim))
-        # Fill in a matrix with the given entries
-        _tmp_mat = _tmp_mat.at[lower_mask].set(vech_Qbar)
-        # Add the lower and upper entries of the matrix, and do not
-        # double-count the diagonal
-        mat_Qbar = jnp.tril(_tmp_mat) + jnp.triu(jnp.transpose(_tmp_mat), 1)
+        # Special treatment estimating \bar{Q}. Apply the ``variance-
+        # targetting'' approach. That is, we estimate by
+        # \hat{\bar{Q}} = sample moment of \hat{u}_t\hat{u}_t^{\top}.
+        _, _, _, _, mat_u = _calc_trajectories(
+            mat_returns=mat_returns,
+            vec_sigma_0=vec_sigma_0,
+            mat_Q_0=mat_Q_0,
+            dict_params_mean=dict_params_mean,
+            dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol,
+            dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor,
+        )
 
-        dict_params_dcc_mvar_cor = {"vec_delta": x[0:dim], "mat_Qbar": mat_Qbar}
-        return dict_params_dcc_mvar_cor
+        # Set \hat{\bar{Q}} = \frac{1}{T} \sum_t u_tu_t^{\top}
+        _func = vmap(jnp.outer, in_axes=[0, 0])
+        tens_uuT = _func(mat_u, mat_u)
+        mat_Qbar = tens_uuT.mean(axis=0)
+
+        dict_params_dcc_mvar_cor = {VEC_DELTA: x, MAT_QBAR: mat_Qbar}
+
+        # Simple parameter restriction checks
+        valid_params = _check_params_dcc_mvar_cor(
+            dim=dim, dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor
+        )
+        return valid_params, dict_params_dcc_mvar_cor
+
+    def _check_params_z(
+        dim: int, dict_params_z: tp.Dict[str, NDArray | Array], min_moments: int = 4
+    ) -> bool:
+        """
+        Check the valididty of parameters of z_t.
+        """
+        vec_lbda = dict_params_z[VEC_LBDA]
+        vec_p0 = dict_params_z[VEC_P0]
+        vec_q0 = dict_params_z[VEC_Q0]
+
+        if jnp.size(vec_lbda) != dim:
+            return False
+
+        if jnp.size(vec_p0) != dim:
+            return False
+
+        if jnp.size(vec_q0) != dim:
+            return False
+
+        if jnp.any(vec_lbda <= -1):
+            return False
+
+        if jnp.any(vec_lbda >= -1):
+            return False
+
+        if jnp.any(vec_p0 <= 0):
+            return False
+
+        if jnp.any(vec_q0 <= 0):
+            return False
+
+        if jnp.any(vec_p0 * vec_q0 < min_moments):
+            return False
+
+        return True
+
+    def _check_params_dcc_uvar_vol(
+        dim: int, dict_params_dcc_uvar_vol: tp.Dict[str, NDArray | Array]
+    ) -> bool:
+        """
+        Check the valididty of parameters of univariate volatilities.
+        """
+        for _, val in dict_params_dcc_uvar_vol.items():
+            if jnp.size(val) != dim:
+                return False
+
+            if jnp.any(val) < 0:
+                return False
+
+        return True
+
+    def _check_params_dcc_mvar_cor(
+        dim: int, dict_params_dcc_mvar_cor: tp.Dict[str, NDArray | Array]
+    ) -> bool:
+        """
+        Check the valididty of DCC parameters
+        """
+        vec_delta = dict_params_dcc_mvar_cor[VEC_DELTA]
+        mat_Qbar = dict_params_dcc_mvar_cor[MAT_QBAR]
+
+        # Check constraints on \delta_2, \delta_2
+        if jnp.size(vec_delta) != dim:
+            return False
+
+        if jnp.any(vec_delta < 0):
+            return False
+
+        if jnp.any(vec_delta > 1):
+            return False
+
+        if jnp.sum(vec_delta > 1):
+            return False
+
+        # Check constraints on \bar{Q}
+        # \bar{Q} should be PSD. But for speed purposes, just
+        # check dimensions.
+        if mat_Qbar.shape != (dim, dim):
+            return False
+
+        return True
 
     def _objfun_dcc_loglik(
         x,
@@ -595,8 +751,24 @@ if __name__ == "__main__":
         # Construct the dict for the parameters
         # that are to be optimized over
         optimizing_params_name = make_dict_params_fun.__name__
+        if optimizing_params_name == "_make_dict_params_dcc_mvar_cor":
+            # Special treatment in handling the estimate of
+            # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
+            dict_optimizing_params = make_dict_params_fun(
+                x=x,
+                dim=dim,
+                mat_returns=mat_returns,
+                vec_sigma_0=vec_sigma_0,
+                mat_Q_0=mat_Q_0,
+                dict_params_mean=dict_params[DICT_PARAMS_MEAN],
+                dict_params_dcc_uvar_vol=dict_params[DICT_PARAMS_DCC_UVAR_VOL],
+                dict_params_dcc_mvar_cor=dict_params[DICT_PARAMS_DCC_MVAR_COR],
+            )
+        else:
+            dict_optimizing_params = make_dict_params_fun(x=x, dim=dim)
+
+        # Prettier name
         optimizing_params_name = optimizing_params_name.split("_make_")[1]
-        dict_optimizing_params = make_dict_params_fun(x=x, dim=dim)
 
         # Update with the rest of the parameters
         # that are held fixed
@@ -633,14 +805,18 @@ if __name__ == "__main__":
         _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_dcc_mvar_cor
     )
 
+    # Step 1: Optimize SGT parameters
+
+    # Step 2: Optimize for the univariate vol parameters
+
+    # Step 3: Optimize for the multivariate DCC parameters
+
     # x = jax.random.uniform(key, shape=(int(dim + dim * (dim + 1) / 2),))
     # x = x.at[0].set(0.25)
     # x = x.at[1].set(0.25)
-    x = jnp.repeat(2.0, 3 * dim)
-    x = x.at[0].set(0.25)
-    x = x.at[1].set(0.25)
+    x = jnp.repeat(0.25, 2)
 
-    hi = objfun_dcc_loglik_opt_params_z(
+    hi = objfun_dcc_loglik_opt_params_dcc_mvar_cor(
         x,
         dict_params=dict_params_init_guess,
         mat_returns=mat_returns,
