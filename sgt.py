@@ -96,7 +96,7 @@ def loglik_mvar_indp_sgt(
 
     summands = _func(data, vec_lbda, vec_p0, vec_q0)
     loglik_summands = jnp.log(summands)
-    loglik = loglik_summands.mean()
+    loglik = loglik_summands.sum()
 
     if neg_loglik:
         loglik = -1.0 * loglik
