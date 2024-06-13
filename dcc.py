@@ -57,7 +57,7 @@ VEC_PSI = "vec_psi"
 
 # Multivariate DCC parameters
 VEC_DELTA = "vec_delta"
-MAT_QBAR = "mat_qbar"
+MAT_QBAR = "mat_Qbar"
 
 
 def _generate_random_cov_mat(key: KeyArrayLike, dim: int) -> Array:
@@ -574,7 +574,7 @@ if __name__ == "__main__":
     key, _ = random.split(key)
     mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
 
-    def _make_dict_params_z(x, dim) -> tuple[bool, tp.Dict[str, NDArray]]:
+    def _make_dict_params_z(x, dim) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         z_t \\sim SGT distribution
@@ -590,11 +590,9 @@ if __name__ == "__main__":
             VEC_Q0: x[2 * dim :],
         }
 
-        valid_params = _check_params_z(dim=dim, dict_params_z=dict_params_z)
+        return dict_params_z
 
-        return valid_params, dict_params_z
-
-    def _make_dict_params_dcc_uvar_vol(x, dim) -> tuple[bool, tp.Dict[str, NDArray]]:
+    def _make_dict_params_dcc_uvar_vol(x, dim) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         univariate GARCH processes.
@@ -606,11 +604,7 @@ if __name__ == "__main__":
             VEC_PSI: x[3 * dim :],
         }
 
-        valid_params = _check_params_dcc_uvar_vol(
-            dim=dim, dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol
-        )
-
-        return valid_params, dict_params_dcc_uvar_vol
+        return dict_params_dcc_uvar_vol
 
     def _make_dict_params_dcc_mvar_cor(
         x,
@@ -621,7 +615,7 @@ if __name__ == "__main__":
         dict_params_mean,
         dict_params_dcc_uvar_vol,
         dict_params_dcc_mvar_cor,
-    ) -> tuple[bool, tp.Dict[str, NDArray]]:
+    ) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         DCC process.
@@ -650,11 +644,7 @@ if __name__ == "__main__":
 
         dict_params_dcc_mvar_cor = {VEC_DELTA: x, MAT_QBAR: mat_Qbar}
 
-        # Simple parameter restriction checks
-        valid_params = _check_params_dcc_mvar_cor(
-            dim=dim, dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor
-        )
-        return valid_params, dict_params_dcc_mvar_cor
+        return dict_params_dcc_mvar_cor
 
     def _check_params_z(
         dim: int, dict_params_z: tp.Dict[str, NDArray | Array], min_moments: int = 4
@@ -716,8 +706,8 @@ if __name__ == "__main__":
         vec_delta = dict_params_dcc_mvar_cor[VEC_DELTA]
         mat_Qbar = dict_params_dcc_mvar_cor[MAT_QBAR]
 
-        # Check constraints on \delta_2, \delta_2
-        if jnp.size(vec_delta) != dim:
+        # Check constraints on \delta_1, \delta_2
+        if jnp.size(vec_delta) != 2:
             return False
 
         if jnp.any(vec_delta < 0):
@@ -740,6 +730,7 @@ if __name__ == "__main__":
     def _objfun_dcc_loglik(
         x,
         make_dict_params_fun,
+        check_params_fun,
         dict_params: tp.Dict[str, tp.Dict[str, NDArray]],
         mat_returns: Array,
         vec_sigma_0: Array,
@@ -766,6 +757,12 @@ if __name__ == "__main__":
             )
         else:
             dict_optimizing_params = make_dict_params_fun(x=x, dim=dim)
+
+        # Check whether the parameters are within the constraints
+        valid_params = check_params_fun(dim, dict_optimizing_params)
+        if valid_params is False:
+            logger.info("Parameters outside of constraints.")
+            return large_num
 
         # Prettier name
         optimizing_params_name = optimizing_params_name.split("_make_")[1]
@@ -794,15 +791,21 @@ if __name__ == "__main__":
         return neg_loglik
 
     objfun_dcc_loglik_opt_params_z = functools.partial(
-        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_z
+        _objfun_dcc_loglik,
+        make_dict_params_fun=_make_dict_params_z,
+        check_params_fun=_check_params_z,
     )
 
     objfun_dcc_loglik_opt_params_dcc_uvar_vol = functools.partial(
-        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_dcc_uvar_vol
+        _objfun_dcc_loglik,
+        make_dict_params_fun=_make_dict_params_dcc_uvar_vol,
+        check_params_fun=_check_params_dcc_uvar_vol,
     )
 
     objfun_dcc_loglik_opt_params_dcc_mvar_cor = functools.partial(
-        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_dcc_mvar_cor
+        _objfun_dcc_loglik,
+        make_dict_params_fun=_make_dict_params_dcc_mvar_cor,
+        check_params_fun=_check_params_dcc_mvar_cor,
     )
 
     # Step 1: Optimize SGT parameters
