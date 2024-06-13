@@ -1,3 +1,4 @@
+from threading import excepthook
 import jax
 from jax._src.random import KeyArrayLike
 import jax.numpy as jnp
@@ -15,6 +16,7 @@ import typing as tp
 
 
 import itertools
+import functools
 
 # import optax
 import jaxopt
@@ -27,7 +29,7 @@ import matplotlib.pyplot as plt
 import sgt
 
 # HACK:
-# jax.config.update("jax_default_device", jax.devices("cpu")[0])
+jax.config.update("jax_default_device", jax.devices("cpu")[0])
 jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
@@ -382,6 +384,17 @@ def calc_innovations(mat_epsilon: Array, tns_Sigma: Array) -> Array:
 
     return mat_z
 
+    # for tt in range(tns_Sigma.shape[0]):
+    #     print(f"tt = {tt}")
+    #     vec_epsilon = mat_epsilon[tt, :]
+    #     mat_Sigma = tns_Sigma[tt, :, :]
+    #     try:
+    #         _calc_innovations(vec_epsilon, mat_Sigma)
+    #     except:
+    #         breakpoint()
+    #
+    # return mat_z
+
 
 def dcc_loglik(
     mat_returns,
@@ -411,7 +424,7 @@ def dcc_loglik(
         mat_epsilon=mat_epsilon,
         mat_sigma=mat_sigma,
         mat_Q_0=mat_Q_0,
-        **dict_params_dcc_mvar_cor
+        **dict_params_dcc_mvar_cor,
     )
 
     # Calculate the innovations z_t
@@ -437,7 +450,7 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(1e2)
+    num_sample = int(1e1)
     dim = 5
     num_cores = 8
 
@@ -493,6 +506,13 @@ if __name__ == "__main__":
         "mat_Qbar": _generate_random_cov_mat(key=key, dim=dim) / 10,
     }
 
+    dict_params_init_guess = {
+        "dict_params_mean": dict_params_mean_init_guess,
+        "dict_params_z": dict_params_z_init_guess,
+        "dict_params_dcc_uvar_vol": dict_params_dcc_uvar_vol_init_guess,
+        "dict_params_dcc_mvar_cor": dict_params_dcc_mvar_cor_init_guess,
+    }
+
     # Initial {\sigma_{i,0}}
     key, _ = random.split(key)
     mat_Sigma_0 = _generate_random_cov_mat(key=key, dim=dim)
@@ -502,7 +522,7 @@ if __name__ == "__main__":
     key, _ = random.split(key)
     mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
 
-    def _make_params_z(x, dim) -> tp.Dict[str, NDArray]:
+    def _make_dict_params_z(x, dim) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         z_t \\sim SGT distribution
@@ -519,7 +539,7 @@ if __name__ == "__main__":
         }
         return dict_params_z
 
-    def _make_params_dcc_uvar_vol(x, dim) -> tp.Dict[str, NDArray]:
+    def _make_dict_params_dcc_uvar_vol(x, dim) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         univariate GARCH processes.
@@ -537,7 +557,7 @@ if __name__ == "__main__":
         }
         return dict_params_dcc_uvar_vol
 
-    def _make_params_dcc_mvar_cor(x, dim) -> tp.Dict[str, NDArray]:
+    def _make_dict_params_dcc_mvar_cor(x, dim) -> tp.Dict[str, NDArray]:
         """
         Take a vector x and split them into parameters related to the
         DCC process.
@@ -561,29 +581,71 @@ if __name__ == "__main__":
         dict_params_dcc_mvar_cor = {"vec_delta": x[0:dim], "mat_Qbar": mat_Qbar}
         return dict_params_dcc_mvar_cor
 
-    x = jax.random.uniform(key, shape=(int(dim + dim * (dim + 1) / 2),))
-    _make_params_dcc_mvar_cor(x, dim)
-
-    breakpoint()
-
-    def objfun_dcc_loglik_over_params_z(
+    def _objfun_dcc_loglik(
         x,
-        mat_returns,
-        vec_sigma_0,
-        mat_Q_0,
-        dict_params_mean,
-        dict_params_dcc_uvar_vol,
-        dict_params_dcc_mvar_cor,
+        make_dict_params_fun,
+        dict_params: tp.Dict[str, tp.Dict[str, NDArray]],
+        mat_returns: Array,
+        vec_sigma_0: Array,
+        mat_Q_0: Array,
+        large_num: float = 999999999.9,
     ):
-        num_sample = mat_returns.shape[0]
         dim = mat_returns.shape[1]
 
-    neg_loglik = dcc_loglik(
+        # Construct the dict for the parameters
+        # that are to be optimized over
+        optimizing_params_name = make_dict_params_fun.__name__
+        optimizing_params_name = optimizing_params_name.split("_make_")[1]
+        dict_optimizing_params = make_dict_params_fun(x=x, dim=dim)
+
+        # Update with the rest of the parameters
+        # that are held fixed
+        dict_params[optimizing_params_name] = dict_optimizing_params
+
+        try:
+            neg_loglik = dcc_loglik(
+                mat_returns=mat_returns,
+                vec_sigma_0=vec_sigma_0,
+                mat_Q_0=mat_Q_0,
+                neg_loglik=True,
+                **dict_params,
+            )
+        except FloatingPointError:
+            logger.info(f"Invalid optimizing parameters.")
+            logger.info(f"{dict_params}")
+            neg_loglik = large_num
+
+        except Exception as e:
+            logger.info(f"{e}")
+            neg_loglik = large_num
+
+        return neg_loglik
+
+    objfun_dcc_loglik_opt_params_z = functools.partial(
+        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_z
+    )
+
+    objfun_dcc_loglik_opt_params_dcc_uvar_vol = functools.partial(
+        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_dcc_uvar_vol
+    )
+
+    objfun_dcc_loglik_opt_params_dcc_mvar_cor = functools.partial(
+        _objfun_dcc_loglik, make_dict_params_fun=_make_dict_params_dcc_mvar_cor
+    )
+
+    # x = jax.random.uniform(key, shape=(int(dim + dim * (dim + 1) / 2),))
+    # x = x.at[0].set(0.25)
+    # x = x.at[1].set(0.25)
+    x = jnp.repeat(2.0, 3 * dim)
+    x = x.at[0].set(0.25)
+    x = x.at[1].set(0.25)
+
+    hi = objfun_dcc_loglik_opt_params_z(
+        x,
+        dict_params=dict_params_init_guess,
         mat_returns=mat_returns,
         vec_sigma_0=vec_sigma_0,
         mat_Q_0=mat_Q_0,
-        dict_params_mean=dict_params_mean,
-        dict_params_z=dict_params_z_init_guess,
-        dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol_init_guess,
-        dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor_init_guess,
     )
+
+    breakpoint()
