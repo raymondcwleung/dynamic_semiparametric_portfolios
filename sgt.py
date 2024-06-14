@@ -13,9 +13,10 @@ import logging
 
 
 import itertools
+from functools import partial
 
 # import optax
-import jaxopt
+# import jaxopt
 
 import numpy as np
 from numpy._typing import ArrayLike
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 # logger.basicConfig(filename="./log.log", encoding="utf-8", level=logging.DEBUG)
 
 
+@partial(jax.jit, static_argnames=["mu", "sigma", "mean_cent", "var_adj"])
 def pdf_sgt(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
     """
     Univariate SGT density

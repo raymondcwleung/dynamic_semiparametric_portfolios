@@ -1,3 +1,4 @@
+from enum import verify
 from threading import excepthook
 import jax
 from jax._src.random import KeyArrayLike
@@ -27,8 +28,10 @@ import typing as tp
 
 import itertools
 import functools
+from functools import partial
 
-# import optax
+import optax
+import optimistix
 import jaxopt
 
 import numpy as np
@@ -40,7 +43,7 @@ import sgt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
-# jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
+jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
@@ -92,6 +95,7 @@ def _calc_demean_returns(mat_returns: Array, vec_mu: NDArray) -> Array:
     return mat_returns - vec_mu
 
 
+@jax.jit
 def _calc_unexpected_excess_rtn(mat_Sigma: Array, vec_z: Array) -> Array:
     """
     Return \\epsilon_t = \\Sigma_t^{1/2} z_t.
@@ -107,6 +111,7 @@ def _calc_unexpected_excess_rtn(mat_Sigma: Array, vec_z: Array) -> Array:
     return vec_epsilon
 
 
+@jax.jit
 def _calc_normalized_unexpected_excess_rtn(
     vec_sigma: Array, vec_epsilon: Array
 ) -> Array:
@@ -119,6 +124,7 @@ def _calc_normalized_unexpected_excess_rtn(
     return vec_u
 
 
+@jax.jit
 def _calc_mat_Q(
     vec_delta: NDArray,
     vec_u_t_minus_1: Array,
@@ -136,6 +142,7 @@ def _calc_mat_Q(
     return mat_Q_t
 
 
+@jax.jit
 def _calc_mat_Gamma(mat_Q: Array) -> Array:
     """
     Return the \\Gamma_t matrix of the DCC model
@@ -146,6 +153,7 @@ def _calc_mat_Gamma(mat_Q: Array) -> Array:
     return mat_Gamma
 
 
+@jax.jit
 def _calc_mat_Sigma(vec_sigma: Array, mat_Gamma: Array) -> Array:
     """
     Return the covariance \\Sigma_t = D_t \\Gamma_t D_t,
@@ -255,6 +263,7 @@ def simulate_dcc(
     return mat_epsilon, tns_Sigma
 
 
+@jax.jit
 def _calc_asymmetric_garch_sigma2(
     vec_sigma_t_minus_1, vec_epsilon_t_minus_1, vec_omega, vec_beta, vec_alpha, vec_psi
 ):
@@ -423,7 +432,7 @@ def simulate_returns(
         logger.error("Incorrect shape for the simulated returns.")
 
     logger.info("Done simulating returns")
-    return mat_returns
+    return data_z, mat_returns
 
 
 def _calc_innovations(vec_epsilon: Array, mat_Sigma: Array) -> Array:
@@ -432,7 +441,7 @@ def _calc_innovations(vec_epsilon: Array, mat_Sigma: Array) -> Array:
     given \\epsilon_t = R_t - \\mu_t and conditional covariances
     {\\Sigma_t}
     """
-    mat_Sigma_sqrt = jnp.linalg.cholesky(mat_Sigma)
+    mat_Sigma_sqrt = jnp.linalg.cholesky(mat_Sigma, upper=True)
     vec_z = jnp.linalg.solve(mat_Sigma_sqrt, vec_epsilon)
 
     return vec_z
@@ -478,7 +487,7 @@ def _calc_trajectories(
         **dict_params_dcc_mvar_cor,
     )
 
-    # Calculate the innovations z_t
+    # Calculate the innovations z_t = \Sigma_t^{-1/2} \epsilon_t
     mat_z = _calc_trajectory_innovations(mat_epsilon=mat_epsilon, tns_Sigma=tns_Sigma)
 
     # Calculate the normalized unexpected returns u_t
@@ -519,7 +528,6 @@ def dcc_loglik(
 
     # Objective function of DCC model
     loglik = sgt_loglik - 0.5 * vec_logdet_Sigma.sum()
-    loglik = loglik / num_sample
 
     if neg_loglik:
         loglik = -1 * loglik
@@ -602,33 +610,34 @@ def _check_params_z(
     """
     Check the valididty of parameters of z_t.
     """
-    vec_lbda = dict_params_z[VEC_LBDA]
-    vec_p0 = dict_params_z[VEC_P0]
-    vec_q0 = dict_params_z[VEC_Q0]
-
-    if jnp.size(vec_lbda) != dim:
-        return False
-
-    if jnp.size(vec_p0) != dim:
-        return False
-
-    if jnp.size(vec_q0) != dim:
-        return False
-
-    if jnp.any(vec_lbda <= -1):
-        return False
-
-    if jnp.any(vec_lbda >= -1):
-        return False
-
-    if jnp.any(vec_p0 <= 0):
-        return False
-
-    if jnp.any(vec_q0 <= 0):
-        return False
-
-    if jnp.any(vec_p0 * vec_q0 < min_moments):
-        return False
+    # HACK:
+    # vec_lbda = dict_params_z[VEC_LBDA]
+    # vec_p0 = dict_params_z[VEC_P0]
+    # vec_q0 = dict_params_z[VEC_Q0]
+    #
+    # if jnp.size(vec_lbda) != dim:
+    #     return False
+    #
+    # if jnp.size(vec_p0) != dim:
+    #     return False
+    #
+    # if jnp.size(vec_q0) != dim:
+    #     return False
+    #
+    # if jnp.any(vec_lbda <= -1):
+    #     return False
+    #
+    # if jnp.any(vec_lbda >= -1):
+    #     return False
+    #
+    # if jnp.any(vec_p0 <= 0):
+    #     return False
+    #
+    # if jnp.any(vec_q0 <= 0):
+    #     return False
+    #
+    # if jnp.any(vec_p0 * vec_q0 < min_moments):
+    #     return False
 
     return True
 
@@ -746,8 +755,8 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(3e3)
-    dim = 2
+    num_sample = int(5e3)
+    dim = 4
     num_cores = 8
 
     # Parameters for the mean returns vector
@@ -781,7 +790,7 @@ if __name__ == "__main__":
         DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_true,
     }
 
-    mat_returns = simulate_returns(
+    data_z, mat_returns = simulate_returns(
         seed=seed,
         dim=dim,
         num_sample=num_sample,
@@ -862,21 +871,86 @@ if __name__ == "__main__":
         )
     )
 
-    # HACK:
-    dict_params = dict_params_true
     # Step 1: Optimize for the univariate vol parameters
     # HACK:
-    x0 = itertools.chain.from_iterable(dict_params_dcc_uvar_vol_true.values())
+    x0 = itertools.chain.from_iterable(dict_params_z_init_guess.values())
     x0 = list(x0)
     x0 = np.array(x0)
     x0 = jnp.array(x0)
-    optres = jscipy.optimize.minimize(
-        objfun_dcc_loglik_opt_params_dcc_uvar_vol,
-        x0=x0,
-        method=method,
-        args=(dict_params,),
-    )
+    # HACK:
+    dict_params = dict_params_true
 
+    hyperparams_proj = {VEC_LBDA: (-1, 1), VEC_P0: (2, 10), VEC_Q0: (2, 10)}
+
+    # def projection(x, hyperparams_proj):
+    #     dict_params_z = _make_dict_params_z(x, dim)
+    #
+    #     proj_vec_lbda = jaxopt.projection.projection_box(
+    #         dict_params_z[VEC_LBDA], hyperparams_proj[VEC_LBDA]
+    #     )
+    #
+    #
+    #
+    #     vec_p0q0 = jnp.concatenate(
+    #         jnp.array([dict_params_z[VEC_P0], dict_params_z[VEC_Q0]]), axis=0
+    #     )
+    #     proj_vec_p0q0 = jaxopt.projection.projection_halfspace(vec_p0q0, hyperparams=( jnp.array([-1,-1]), -np.log(4.0) ) )
+    #
+    #     breakpoint()
+    #
+    # projection(x=x0)
+
+    # start_learning_rate = 1e-1
+    # optimizer = optax.adam(start_learning_rate)
+    # opt_state = optimizer.init(x0)
+    # xx = x0
+    # for _ in range(10):
+    #     grads = jax.grad(objfun_dcc_loglik_opt_params_dcc_uvar_vol)(xx, dict_params)
+    #     updates, opt_state = optimizer.update(grads, opt_state)
+    #     xx = optax.apply_updates(xx, updates)
+
+    # solver = optimistix.BFGS(rtol=1e-3, atol=1e-2, norm=optimistix.two_norm)
+    # optx_optres = optimistix.minimise(
+    #     objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+    #     solver=solver,
+    #     y0=x0,
+    #     args=dict_params,
+    # )
+    # result = optimistix.RESULTS[optx_optres.result]
+
+    hyperparams_proj = (0.1, 3)
+    verbose = True
+    maxiter = 500
+    tol = 1e-5
+    projection = jaxopt.projection.projection_box
+
+    z_pg = jaxopt.LBFGS(
+        fun=sgt.mvar_sgt_objfun, verbose=verbose, maxiter=maxiter, tol=tol
+    )
+    z_pg_sol = z_pg.run(init_params=x0, data=data_z)
+
+    # pg = jaxopt.ProjectedGradient(
+    #     fun=objfun_dcc_loglik_opt_params_z,
+    #     projection=projection,
+    #     verbose=verbose,
+    #     maxiter=maxiter,
+    # )
+    # pg_sol = pg.run(
+    #     init_params=x0, dict_params=dict_params, hyperparams_proj=hyperparams_proj
+    # )
+
+    pg = jaxopt.LBFGS(
+        fun=objfun_dcc_loglik_opt_params_z, verbose=verbose, maxiter=maxiter, tol=tol
+    )
+    pg_sol = pg.run(init_params=x0, dict_params=dict_params)
+
+    # optres = jscipy.optimize.minimize(
+    #     objfun_dcc_loglik_opt_params_z,
+    #     x0=x0,
+    #     method=method,
+    #     args=(dict_params,),
+    # )
+    #
     # Step 2: Optimize for the multivariate DCC parameters
 
     # Step 3: Optimize SGT parameters
