@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
-jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+# jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
+# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
 logger = logging.getLogger(__name__)
