@@ -26,11 +26,39 @@ import matplotlib.pyplot as plt
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
 # jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
 logger = logging.getLogger(__name__)
-# logger.basicConfig(filename="./log.log", encoding="utf-8", level=logging.DEBUG)
+logging.basicConfig(
+    filename="sgt.log",
+    datefmt="%Y-%m-%d %I:%M:%S %p",
+    level=logging.INFO,
+    format="%(levelname)s | %(asctime)s | %(message)s",
+    filemode="w",
+)
+
+
+def positive_part(x: Array) -> Array:
+    """
+    Positive part of a scalar x^{+} := \\max\\{ x, 0 \\}
+    """
+    return jnp.maximum(x, 0)
+
+
+def negative_part(x: Array) -> Array:
+    """
+    Negative part of a scalar x^{-} :=
+    \\max\\{ -x, 0 \\} = -min\\{ x, 0 \\}
+    """
+    return -1 * jnp.minimum(x, 0)
+
+
+def indicator(x):
+    """
+    Indicator function x \\mapsto \\ind(x \\le 0)
+    """
+    return x <= 0
 
 
 @partial(jax.jit, static_argnames=["mu", "sigma", "mean_cent", "var_adj"])
@@ -114,12 +142,18 @@ def quantile_sgt(
     sigma: float = 1.0,
     mean_cent: bool = True,
     var_adj: bool = True,
-    use_jax: bool = False,
+    use_jax: bool = True,
 ):
     """
     Univariate SGT quantile
     """
+    # PERF: Slow performance here because of the
+    # use of scipy.stats.beta.ppf. In particular,
+    # the JAX counterpart to stats.beta.ppf
+    # has NOT been implemented. Hence, we must
+    # resort to the slow scipy.stats.beta.ppf.
     beta_quantile = scipy.stats.beta.ppf
+
     if use_jax:
         sqrt = jnp.sqrt
         beta = jscipy.special.beta
@@ -322,17 +356,181 @@ def mle_mvar_sgt(
     return optres
 
 
+def _time_varying_lbda_params(
+    theta: Array, lbda_t_minus_1: Array, z_t_minus_1: Array
+) -> Array:
+    """
+    Time varying dynamics of the \\lambda parameter.
+    """
+    tanh = jnp.tanh
+    arctanh = jnp.arctanh
+    log = jnp.log
+
+    _rhs = (
+        theta[0]
+        + negative_part(theta[1]) * z_t_minus_1 * indicator(z_t_minus_1)
+        + positive_part(theta[1]) * z_t_minus_1 * (1 - indicator(z_t_minus_1))
+    )
+
+    lbda_t = tanh(_rhs + theta[2] * arctanh(lbda_t_minus_1))
+    return lbda_t
+
+
+def _time_varying_pq_params(
+    theta: Array, param_t_minus_1: Array, z_t_minus_1: Array, theta_bar: float = 2.0
+) -> Array:
+    """
+    Time varying dynamics of the p or q parameters.
+    """
+    abs = jnp.abs
+    exp = jnp.exp
+    log = jnp.log
+
+    # Define the transition terms on the RHS
+    _rhs = (
+        log(theta[0])
+        + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1)
+        + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1))
+    )
+
+    param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+    return param_t
+
+
+def sample_mvar_timevarying_sgt(
+    key: KeyArrayLike,
+    num_sample: int,
+    mat_lbda_tvparams: Array,
+    mat_p0_tvparams: Array,
+    mat_q0_tvparams: Array,
+    vec_lbda_init_t0: Array,
+    vec_p0_init_t0: Array,
+    vec_q0_init_t0: Array,
+) -> tuple[Array, Array, Array, Array]:
+    """
+    Generate samples of time-varying SGT random
+    vectors by inverse transform sampling.
+
+    NOTE: This function does not use JAX.
+    """
+    dim = jnp.shape(mat_lbda_tvparams)[1]
+
+    # Independent Uniform(0,1) random variables
+    unif_data = jax.random.uniform(key=key, shape=(num_sample, dim))
+
+    # Init
+    mat_lbda = jnp.empty(shape=(num_sample, dim))
+    mat_p0 = jnp.empty(shape=(num_sample, dim))
+    mat_q0 = jnp.empty(shape=(num_sample, dim))
+    mat_z = jnp.empty(shape=(num_sample, dim))
+
+    mat_lbda = mat_lbda.at[0].set(vec_lbda_init_t0)
+    mat_p0 = mat_p0.at[0].set(vec_p0_init_t0)
+    mat_q0 = mat_p0.at[0].set(vec_q0_init_t0)
+    mat_z = mat_z.at[0].set(vec_z_init_t0)
+
+    # Setup vmap functions
+    _func_lbda = vmap(_time_varying_lbda_params, in_axes=[1, 0, 0])
+    _func_pq = vmap(_time_varying_pq_params, in_axes=[1, 0, 0])
+
+    def _body_fun(tt, carry):
+        """
+        Convenient function for mapping t - 1 quantities to t quantities
+        """
+        mat_lbda, mat_p0, mat_q0, mat_z = carry
+
+        # Compute \lambda_t
+        vec_lbda_t = _func_lbda(
+            mat_lbda_tvparams, mat_lbda[tt - 1, :], mat_z[tt - 1, :]
+        )
+
+        # Compute p_t
+        vec_p0_t = _func_pq(mat_p0_tvparams, mat_p0[tt - 1, :], mat_z[tt - 1, :])
+
+        # Compute q_t
+        vec_q0_t = _func_pq(mat_q0_tvparams, mat_q0[tt - 1, :], mat_z[tt - 1, :])
+
+        # Compute z_t
+        vec_z_t = quantile_sgt(unif_data[tt, :], vec_lbda_t, vec_p0_t, vec_q0_t)
+
+        # Bookkeeping
+        mat_lbda = mat_lbda.at[tt].set(vec_lbda_t)
+        mat_p0 = mat_p0.at[tt].set(vec_p0_t)
+        mat_q0 = mat_q0.at[tt].set(vec_q0_t)
+        mat_z = mat_z.at[tt].set(vec_z_t)
+
+        return mat_lbda, mat_p0, mat_q0, mat_z
+
+    logger.info(f"Begin time-varying SGT simulation")
+
+    carry = (mat_lbda, mat_p0, mat_q0, mat_z)
+    for tt in range(1, num_sample):
+        carry = _body_fun(tt, carry)
+
+        if tt % 100 == 0:
+            logger.info(f"... complete iteration {tt}/{num_sample}")
+    mat_lbda, mat_p0, mat_q0, mat_z = carry
+
+    logger.info(f"Done time-varying SGT simulation")
+
+    return mat_lbda, mat_p0, mat_q0, mat_z
+
+
 if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(1e2)
-    dim = 3
+    num_sample = int(1e3)
+    dim = 5
     num_cores = 8
+
+    num_lbda_tvparams = 3
+    num_p0_tvparams = 3
+    num_q0_tvparams = 3
 
     vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
     vec_p0_true = rng.uniform(2, 10, dim)
     vec_q0_true = rng.uniform(2, 10, dim)
+
+    mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (num_lbda_tvparams, dim))
+    mat_p0_tvparams_true = rng.uniform(-1, 1, (num_p0_tvparams, dim))
+    mat_q0_tvparams_true = rng.uniform(-1, 1, (num_q0_tvparams, dim))
+    # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
+    mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
+    mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
+
+    vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
+    vec_z_init_t0 = jnp.repeat(0.0, dim)
+    vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
+    vec_p0_init_t0 = rng.uniform(2, 4, dim)
+    vec_q0_init_t0 = rng.uniform(2, 4, dim)
+
+    mat_lbda_tvparams = mat_lbda_tvparams_true
+    mat_p0_tvparams = mat_p0_tvparams_true
+    mat_q0_tvparams = mat_q0_tvparams_true
+
+    # carry = jax.lax.fori_loop(
+    #     lower=1,
+    #     upper=num_sample,
+    #     body_fun=_body_fun,
+    #     init_val=(mat_lbda, mat_p0, mat_q0, mat_z),
+    # )
+
+    mat_lbda, mat_p0, mat_q0, mat_z = sample_mvar_timevarying_sgt(
+        key=key,
+        num_sample=num_sample,
+        mat_lbda_tvparams=mat_lbda_tvparams_true,
+        mat_p0_tvparams=mat_p0_tvparams_true,
+        mat_q0_tvparams=mat_q0_tvparams_true,
+        vec_lbda_init_t0=vec_lbda_init_t0,
+        vec_p0_init_t0=vec_p0_init_t0,
+        vec_q0_init_t0=vec_q0_init_t0,
+    )
+
+    plt.plot(mat_p0[10:, 0])
+    plt.show()
+
+    breakpoint()
 
     data = sample_mvar_sgt(
         key=key,

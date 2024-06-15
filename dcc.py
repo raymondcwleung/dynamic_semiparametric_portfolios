@@ -937,7 +937,7 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(3e3)
+    num_sample = int(1e3)
     dim = 3
     num_cores = 8
 
