@@ -573,6 +573,7 @@ def _make_dict_params_dcc_mvar_cor(
     mat_returns,
     dict_init_t0_conditions,
     dict_params_mean,
+    dict_params_z,  # Unused
     dict_params_dcc_uvar_vol,
     dict_params_dcc_mvar_cor,
 ) -> tp.Dict[str, NDArray]:
@@ -582,6 +583,7 @@ def _make_dict_params_dcc_mvar_cor(
     """
     if jnp.size(x) != 2:
         raise ValueError("Total number of parameters for the DCC process is incorrect.")
+    dict_params_dcc_mvar_cor[VEC_DELTA] = x
 
     # Special treatment estimating \bar{Q}. Apply the ``variance-
     # targetting'' approach. That is, we estimate by
@@ -598,8 +600,7 @@ def _make_dict_params_dcc_mvar_cor(
     _func = vmap(jnp.outer, in_axes=[0, 0])
     tens_uuT = _func(mat_u, mat_u)
     mat_Qbar = tens_uuT.mean(axis=0)
-
-    dict_params_dcc_mvar_cor = {VEC_DELTA: x, MAT_QBAR: mat_Qbar}
+    dict_params_dcc_mvar_cor[MAT_QBAR] = mat_Qbar
 
     return dict_params_dcc_mvar_cor
 
@@ -665,27 +666,28 @@ def _check_params_dcc_mvar_cor(
     """
     Check the valididty of DCC parameters
     """
-    vec_delta = dict_params_dcc_mvar_cor[VEC_DELTA]
-    mat_Qbar = dict_params_dcc_mvar_cor[MAT_QBAR]
-
-    # Check constraints on \delta_1, \delta_2
-    if jnp.size(vec_delta) != 2:
-        return False
-
-    if jnp.any(vec_delta < 0):
-        return False
-
-    if jnp.any(vec_delta > 1):
-        return False
-
-    if jnp.sum(vec_delta > 1):
-        return False
-
-    # Check constraints on \bar{Q}
-    # \bar{Q} should be PSD. But for speed purposes, just
-    # check dimensions.
-    if mat_Qbar.shape != (dim, dim):
-        return False
+    # HACK:
+    # vec_delta = dict_params_dcc_mvar_cor[VEC_DELTA]
+    # mat_Qbar = dict_params_dcc_mvar_cor[MAT_QBAR]
+    #
+    # # Check constraints on \delta_1, \delta_2
+    # if jnp.size(vec_delta) != 2:
+    #     return False
+    #
+    # if jnp.any(vec_delta < 0):
+    #     return False
+    #
+    # if jnp.any(vec_delta > 1):
+    #     return False
+    #
+    # if jnp.sum(vec_delta > 1):
+    #     return False
+    #
+    # # Check constraints on \bar{Q}
+    # # \bar{Q} should be PSD. But for speed purposes, just
+    # # check dimensions.
+    # if mat_Qbar.shape != (dim, dim):
+    #     return False
 
     return True
 
@@ -712,9 +714,7 @@ def _objfun_dcc_loglik(
             dim=dim,
             mat_returns=mat_returns,
             dict_init_t0_conditions=dict_init_t0_conditions,
-            dict_params_mean=dict_params[DICT_PARAMS_MEAN],
-            dict_params_dcc_uvar_vol=dict_params[DICT_PARAMS_DCC_UVAR_VOL],
-            dict_params_dcc_mvar_cor=dict_params[DICT_PARAMS_DCC_MVAR_COR],
+            **dict_params,
         )
     else:
         dict_optimizing_params = make_dict_params_fun(x=x, dim=dim)
@@ -755,8 +755,8 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(5e3)
-    dim = 4
+    num_sample = int(1e3)
+    dim = 3
     num_cores = 8
 
     # Parameters for the mean returns vector
@@ -878,7 +878,7 @@ if __name__ == "__main__":
     x0 = np.array(x0)
     x0 = jnp.array(x0)
     # HACK:
-    dict_params = dict_params_true
+    dict_params = dict_params_init_guess
 
     hyperparams_proj = {VEC_LBDA: (-1, 1), VEC_P0: (2, 10), VEC_Q0: (2, 10)}
 
@@ -919,15 +919,15 @@ if __name__ == "__main__":
     # result = optimistix.RESULTS[optx_optres.result]
 
     hyperparams_proj = (0.1, 3)
-    verbose = True
-    maxiter = 500
-    tol = 1e-5
+    verbose = False
+    maxiter = 100
+    tol = 1e-3
     projection = jaxopt.projection.projection_box
 
-    z_pg = jaxopt.LBFGS(
-        fun=sgt.mvar_sgt_objfun, verbose=verbose, maxiter=maxiter, tol=tol
-    )
-    z_pg_sol = z_pg.run(init_params=x0, data=data_z)
+    # z_pg = jaxopt.LBFGS(
+    #     fun=sgt.mvar_sgt_objfun, verbose=verbose, maxiter=maxiter, tol=tol
+    # )
+    # z_pg_sol = z_pg.run(init_params=x0, data=data_z)
 
     # pg = jaxopt.ProjectedGradient(
     #     fun=objfun_dcc_loglik_opt_params_z,
@@ -938,11 +938,63 @@ if __name__ == "__main__":
     # pg_sol = pg.run(
     #     init_params=x0, dict_params=dict_params, hyperparams_proj=hyperparams_proj
     # )
+    #
+    #
 
+    def _make_params_array_from_dict_params(
+        dict_params: tp.Dict[str, Array] | tp.Dict[str, NDArray]
+    ) -> Array:
+        """
+        Take in a dictionary of parameters and flatten them to an
+        array in preparation for optimization.
+        """
+        x0 = itertools.chain.from_iterable(dict_params.values())
+        x0 = list(x0)
+        x0 = np.array(x0)
+        x0 = jnp.array(x0)
+
+        return x0
+
+    x0 = _make_params_array_from_dict_params(dict_params_z_init_guess)
     pg = jaxopt.LBFGS(
         fun=objfun_dcc_loglik_opt_params_z, verbose=verbose, maxiter=maxiter, tol=tol
     )
     pg_sol = pg.run(init_params=x0, dict_params=dict_params)
+    dict_params_z_est = _make_dict_params_z(x=pg_sol.params, dim=dim)
+    dict_params[DICT_PARAMS_Z] = dict_params_z_est
+
+    x0 = _make_params_array_from_dict_params(dict_params_dcc_uvar_vol_init_guess)
+    pg_dcc_uvar_vol = jaxopt.LBFGS(
+        fun=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+        verbose=verbose,
+        maxiter=maxiter,
+        tol=tol,
+    )
+    pg_dcc_uvar_vol_sol = pg_dcc_uvar_vol.run(init_params=x0, dict_params=dict_params)
+    dict_params_dcc_uvar_vol_est = _make_dict_params_dcc_uvar_vol(
+        x=pg_dcc_uvar_vol_sol.params, dim=dim
+    )
+    dict_params[DICT_PARAMS_DCC_UVAR_VOL] = dict_params_dcc_uvar_vol_est
+
+    verbose = True
+    x0 = dict_params_dcc_mvar_cor_init_guess[VEC_DELTA]
+    pg_dcc_mvar_cor = jaxopt.LBFGS(
+        fun=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
+        verbose=verbose,
+        maxiter=maxiter,
+        tol=tol,
+    )
+    pg_dcc_mvar_cor_sol = pg_dcc_mvar_cor.run(init_params=x0, dict_params=dict_params)
+    dict_params_dcc_mvar_cor_est = _make_dict_params_dcc_mvar_cor(
+        x=pg_dcc_mvar_cor_sol.params,
+        dim=dim,
+        mat_returns=mat_returns,
+        dict_init_t0_conditions=dict_init_t0_conditions,
+        **dict_params,
+    )
+    dict_params[DICT_PARAMS_DCC_MVAR_COR] = dict_params_dcc_mvar_cor_est
+
+    breakpoint()
 
     # optres = jscipy.optimize.minimize(
     #     objfun_dcc_loglik_opt_params_z,
@@ -954,5 +1006,3 @@ if __name__ == "__main__":
     # Step 2: Optimize for the multivariate DCC parameters
 
     # Step 3: Optimize SGT parameters
-
-    breakpoint()
