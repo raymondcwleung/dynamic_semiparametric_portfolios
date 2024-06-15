@@ -309,12 +309,13 @@ def mle_mvar_sgt(
             else:
                 logger.info(f"No solution at iteration {ii}. x0 = {x0}")
 
-        except FloatingPointError:
+        except FloatingPointError as e:
             logger.warning(f"Iteration {ii} encountered FloatingPointError. x0 = {x0}")
+            logger.warning(str(e))
             continue
 
     if (optres is None) or (optres.success is False):
-        logger.error("No solution found!")
+        logger.critical("No solution found!")
     else:
         logger.info("Done! Complete MLE for SGT.")
 
