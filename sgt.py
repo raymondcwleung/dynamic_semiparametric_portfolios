@@ -1,26 +1,29 @@
 import jax
-from jax._src.random import KeyArrayLike
 import jax.numpy as jnp
 import jax.scipy as jscipy
 import jax.scipy.optimize
 from jax import grad, jit, vmap
 from jax import random
 import jax.test_util
-from jax import Array
-from jax.typing import ArrayLike, DTypeLike
+
+import typing as tp
+import jaxtyping as jpt
+
 
 import os
 import logging
 from pathlib import Path
+import pickle
 
 import itertools
 from functools import partial
+
+from dataclasses import dataclass
 
 # import optax
 # import jaxopt
 
 import numpy as np
-from numpy._typing import ArrayLike
 import scipy
 import matplotlib.pyplot as plt
 
@@ -40,17 +43,56 @@ logging.basicConfig(
 )
 
 
+@dataclass
+class SimulatedInnovations:
+    """
+    Data class for keeping track of the parameters and data
+    of the innovation SGT z_t
+    """
+
+    # Number of time samples
+    num_sample: int
+
+    ################################################################
+    ## Parameters
+    ################################################################
+    mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"]
+    mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"]
+    mat_q0_tvparams_true: jpt.Float[jpt.Array, "num_q0_tvparams dim"]
+
+    ################################################################
+    ## Initial conditions
+    ################################################################
+    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"]
+    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"]
+    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"]
+
+    ################################################################
+    ## Simulated data
+    ################################################################
+    # Time-varying parameters related to z_t
+    data_mat_lbda: jpt.Float[jpt.Array, "num_sample dim"]
+    data_mat_p0: jpt.Float[jpt.Array, "num_sample dim"]
+    data_mat_q0: jpt.Float[jpt.Array, "num_sample dim"]
+
+    # Innovations z_t
+    data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
+
+
 RUN_TIMEVARYING_SGT_SIMULATIONS = False
+NUM_LBDA_TVPARAMS = 3
+NUM_P0_TVPARAMS = 3
+NUM_Q0_TVPARAMS = 3
 
 
-def positive_part(x: Array) -> Array:
+def positive_part(x: jpt.Array) -> jpt.Array:
     """
     Positive part of a scalar x^{+} := \\max\\{ x, 0 \\}
     """
     return jnp.maximum(x, 0)
 
 
-def negative_part(x: Array) -> Array:
+def negative_part(x: jpt.Array) -> jpt.Array:
     """
     Negative part of a scalar x^{-} :=
     \\max\\{ -x, 0 \\} = -min\\{ x, 0 \\}
@@ -58,7 +100,7 @@ def negative_part(x: Array) -> Array:
     return -1 * jnp.minimum(x, 0)
 
 
-def indicator(x):
+def indicator(x: jpt.Array):
     """
     Indicator function x \\mapsto \\ind(x \\le 0)
     """
@@ -104,10 +146,10 @@ def pdf_sgt(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
 
 
 def pdf_mvar_indp_sgt(
-    x: ArrayLike,
-    vec_lbda: ArrayLike,
-    vec_p0: ArrayLike,
-    vec_q0: ArrayLike,
+    x: jpt.ArrayLike,
+    vec_lbda: jpt.ArrayLike,
+    vec_p0: jpt.ArrayLike,
+    vec_q0: jpt.ArrayLike,
 ):
     """
     Let X_1 \\sim SGT(\\theta_1), \\ldots, X_d \\sim SGT(\\theta_d) be
@@ -120,7 +162,11 @@ def pdf_mvar_indp_sgt(
 
 
 def loglik_mvar_indp_sgt(
-    data: Array, vec_lbda: Array, vec_p0: Array, vec_q0: Array, neg_loglik: bool
+    data: jpt.Array,
+    vec_lbda: jpt.Array,
+    vec_p0: jpt.Array,
+    vec_q0: jpt.Array,
+    neg_loglik: bool,
 ):
     """
     (Negative) of the log-likelihood function of a vector of
@@ -138,10 +184,10 @@ def loglik_mvar_indp_sgt(
 
 
 def quantile_sgt(
-    prob: float,
-    lbda: float,
-    p0: float,
-    q0: float,
+    prob: jpt.Float[jpt.Array, "?num_sample"],
+    lbda: jpt.Float[jpt.Array, "?dim"],
+    p0: jpt.Float[jpt.Array, "?dim"],
+    q0: jpt.Float[jpt.Array, "?dim"],
     mu: float = 0.0,
     sigma: float = 1.0,
     mean_cent: bool = True,
@@ -207,15 +253,15 @@ def quantile_sgt(
 
 
 def sample_mvar_sgt(
-    key: KeyArrayLike,
+    key,
     num_sample: int,
-    vec_lbda: ArrayLike,
-    vec_p0: ArrayLike,
-    vec_q0: ArrayLike,
+    vec_lbda: jpt.ArrayLike,
+    vec_p0: jpt.ArrayLike,
+    vec_q0: jpt.ArrayLike,
     mu: float = 0.0,
     sigma: float = 1.0,
     num_cores: int = 1,
-) -> Array:
+) -> jpt.Array:
     """
     Generate samples of SGT random vectors by
     inverse transform sampling.
@@ -297,8 +343,8 @@ def mvar_sgt_objfun(x, data, neg_loglik: bool = True):
 
 
 def mle_mvar_sgt(
-    key: KeyArrayLike,
-    data: Array,
+    key,
+    data: jpt.Array,
     num_trials: int,
     lst_scale_lbda: list[float] = [-0.25, 0.5],
     lst_scale_p0: list[float] = [2, 5],
@@ -361,14 +407,15 @@ def mle_mvar_sgt(
 
 
 def _time_varying_lbda_params(
-    theta: Array, lbda_t_minus_1: Array, z_t_minus_1: Array
-) -> Array:
+    theta: jpt.Float[jpt.Array, "num_lbda_tvparams"],
+    lbda_t_minus_1: jpt.Float[jpt.Array, "#dim"],
+    z_t_minus_1: jpt.Float[jpt.Array, "#dim"],
+) -> jpt.Array:
     """
     Time varying dynamics of the \\lambda parameter.
     """
     tanh = jnp.tanh
     arctanh = jnp.arctanh
-    log = jnp.log
 
     _rhs = (
         theta[0]
@@ -381,8 +428,11 @@ def _time_varying_lbda_params(
 
 
 def _time_varying_pq_params(
-    theta: Array, param_t_minus_1: Array, z_t_minus_1: Array, theta_bar: float = 2.0
-) -> Array:
+    theta: jpt.Float[jpt.Array, "?num_pq_tvparams"],
+    param_t_minus_1: jpt.Float[jpt.Array, "?num_pq_tvparams"],
+    z_t_minus_1: jpt.Float[jpt.Array, "dim"],
+    theta_bar: float = 2.0,
+) -> jpt.Array:
     """
     Time varying dynamics of the p or q parameters.
     """
@@ -402,23 +452,28 @@ def _time_varying_pq_params(
 
 
 def sample_mvar_timevarying_sgt(
-    key: KeyArrayLike,
+    key,
     num_sample: int,
-    mat_lbda_tvparams: Array,
-    mat_p0_tvparams: Array,
-    mat_q0_tvparams: Array,
-    vec_lbda_init_t0: Array,
-    vec_p0_init_t0: Array,
-    vec_q0_init_t0: Array,
+    mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"],
+    mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"],
+    mat_q0_tvparams_true: jpt.Float[jpt.Array, "num_q0_tvparams dim"],
+    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"],
     save_path: None | os.PathLike,
-) -> tuple[Array, Array, Array, Array]:
+) -> tp.Tuple[
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_lbda
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_p0
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_q0
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_z
+]:
     """
     Generate samples of time-varying SGT random
     vectors by inverse transform sampling.
 
-    NOTE: This function does not use JAX.
+    NOTE: This function does NOT use JAX.
     """
-    dim = jnp.shape(mat_lbda_tvparams)[1]
+    dim = jnp.shape(mat_lbda_tvparams_true)[1]
 
     # Independent Uniform(0,1) random variables
     unif_data = jax.random.uniform(key=key, shape=(num_sample, dim))
@@ -446,14 +501,14 @@ def sample_mvar_timevarying_sgt(
 
         # Compute \lambda_t
         vec_lbda_t = _func_lbda(
-            mat_lbda_tvparams, mat_lbda[tt - 1, :], mat_z[tt - 1, :]
+            mat_lbda_tvparams_true, mat_lbda[tt - 1, :], mat_z[tt - 1, :]
         )
 
         # Compute p_t
-        vec_p0_t = _func_pq(mat_p0_tvparams, mat_p0[tt - 1, :], mat_z[tt - 1, :])
+        vec_p0_t = _func_pq(mat_p0_tvparams_true, mat_p0[tt - 1, :], mat_z[tt - 1, :])
 
         # Compute q_t
-        vec_q0_t = _func_pq(mat_q0_tvparams, mat_q0[tt - 1, :], mat_z[tt - 1, :])
+        vec_q0_t = _func_pq(mat_q0_tvparams_true, mat_q0[tt - 1, :], mat_z[tt - 1, :])
 
         # Compute z_t
         vec_z_t = quantile_sgt(unif_data[tt, :], vec_lbda_t, vec_p0_t, vec_q0_t)
@@ -479,25 +534,24 @@ def sample_mvar_timevarying_sgt(
 
     logger.info(f"Done time-varying SGT simulation")
 
+    siminnov = SimulatedInnovations(
+        num_sample=num_sample,
+        mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+        mat_p0_tvparams_true=mat_p0_tvparams_true,
+        mat_q0_tvparams_true=mat_q0_tvparams_true,
+        vec_lbda_init_t0=vec_lbda_init_t0,
+        vec_p0_init_t0=vec_p0_init_t0,
+        vec_q0_init_t0=vec_q0_init_t0,
+        data_mat_lbda=data_mat_lbda,
+        data_mat_p0=data_mat_p0,
+        data_mat_q0=data_mat_q0,
+        data_mat_z=data_mat_z,
+    )
+
     # Save
     if save_path is not None:
         with open(save_path, "wb") as f:
-            jnp.savez(
-                f,
-                num_sample=num_sample,
-                dim=dim,
-                mat_lbda_tvparams_true=mat_lbda_tvparams_true,
-                mat_p0_tvparams_true=mat_p0_tvparams_true,
-                mat_q0_tvparams_true=mat_q0_tvparams_true,
-                vec_z_init_t0=vec_z_init_t0,
-                vec_lbda_init_t0=vec_lbda_init_t0,
-                vec_p0_init_t0=vec_p0_init_t0,
-                vec_q0_init_t0=vec_q0_init_t0,
-                data_mat_lbda=data_mat_lbda,
-                data_mat_p0=data_mat_p0,
-                data_mat_q0=data_mat_q0,
-                data_mat_z=data_mat_z,
-            )
+            pickle.dump(siminnov, f)
         logger.info(f"Saved SGT simulations to {str(save_path)}")
 
     return data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z
@@ -511,19 +565,15 @@ if __name__ == "__main__":
         num_sample = int(3e3)
         dim = 5
         num_cores = 8
-        save_path = Path().resolve() / "data_timevarying_sgt.npz"
-
-        num_lbda_tvparams = 3
-        num_p0_tvparams = 3
-        num_q0_tvparams = 3
+        save_path = Path().resolve() / "data_timevarying_sgt.pkl"
 
         vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
         vec_p0_true = rng.uniform(2, 10, dim)
         vec_q0_true = rng.uniform(2, 10, dim)
 
-        mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (num_lbda_tvparams, dim))
-        mat_p0_tvparams_true = rng.uniform(-1, 1, (num_p0_tvparams, dim))
-        mat_q0_tvparams_true = rng.uniform(-1, 1, (num_q0_tvparams, dim))
+        mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
+        mat_p0_tvparams_true = rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))
+        mat_q0_tvparams_true = rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))
         # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
         mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
         mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
@@ -542,9 +592,9 @@ if __name__ == "__main__":
             sample_mvar_timevarying_sgt(
                 key=key,
                 num_sample=num_sample,
-                mat_lbda_tvparams=mat_lbda_tvparams_true,
-                mat_p0_tvparams=mat_p0_tvparams_true,
-                mat_q0_tvparams=mat_q0_tvparams_true,
+                mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+                mat_p0_tvparams_true=mat_p0_tvparams_true,
+                mat_q0_tvparams_true=mat_q0_tvparams_true,
                 vec_lbda_init_t0=vec_lbda_init_t0,
                 vec_p0_init_t0=vec_p0_init_t0,
                 vec_q0_init_t0=vec_q0_init_t0,
@@ -552,7 +602,7 @@ if __name__ == "__main__":
             )
         )
 
-    # Load simulations
-    save_path = Path().resolve() / "data_timevarying_sgt.npz"
-    with open(save_path, "rb") as f:
-        npzfile = jnp.load(f)
+    # # Load simulations
+    # save_path = Path().resolve() / "data_timevarying_sgt.npz"
+    # with open(save_path, "rb") as f:
+    #     npzfile = jnp.load(f)

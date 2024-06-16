@@ -10,10 +10,14 @@ from jax import random
 import jax.test_util
 from jax import Array
 from jax.typing import ArrayLike, DTypeLike
-import jax.typing as jpt
+import jaxtyping as jpt
 import numpy.typing as npt
 
 import logging
+import os
+import pathlib
+
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -80,7 +84,78 @@ VEC_DELTA = "vec_delta"
 MAT_QBAR = "mat_Qbar"
 
 
-def _generate_random_cov_mat(key: KeyArrayLike, dim: int) -> Array:
+@dataclass
+class SimulatedReturns:
+    """
+    Data class for keeping track of the parameters and data
+    of simulated returns.
+    """
+
+    # Dimension (i.e. number of assets) and number of time samples
+    dim: int
+    num_sample: int
+
+    ################################################################
+    ## Parameters
+    ################################################################
+    # Parameters for the time-varying innovations z_t
+    mat_lbda_tvparams_true: tp.Dict[str, jpt.ArrayLike]
+    mat_p0_tvparams_true: tp.Dict[str, jpt.ArrayLike]
+    mat_q0_tvparams_true: tp.Dict[str, jpt.ArrayLike]
+
+    # Parameters for the mean vector
+    dict_params_mean: tp.Dict[str, jpt.ArrayLike]
+
+    # Parameters for the DCC
+    dict_params_dcc_uvar_vol: tp.Dict[str, jpt.ArrayLike]
+    dict_params_dcc_mvar_cor: tp.Dict[str, jpt.ArrayLike]
+
+    ################################################################
+    ## Initial conditions
+    ################################################################
+    # Time t = 0 initial conditions for the innovations z_t
+    vec_z_init_t0: jpt.ArrayLike
+    vec_lbda_init_t0: jpt.ArrayLike
+    vec_p0_init_t0: jpt.ArrayLike
+    vec_q0_init_t0: jpt.ArrayLike
+
+    # Time t = 0 initial conditions for the DCC
+    vec_sigma_init_t0: jpt.ArrayLike
+    mat_Q_init_t0: jpt.ArrayLike
+
+    ################################################################
+    ## Simulated data
+    ################################################################
+    # Time-varying parameters related to z_t
+    data_mat_lbda: jpt.ArrayLike
+    data_mat_p0: jpt.ArrayLike
+    data_mat_q0: jpt.ArrayLike
+
+    # Innovations z_t
+    data_mat_z: jpt.ArrayLike
+
+    # Unexpected excess returns \epsilon_t
+    data_mat_epsilon: jpt.ArrayLike
+
+    # Univariate volatilities \sigma_{i,t}'s
+    data_mat_sigma: jpt.ArrayLike
+
+    # Normalized unexpected returns u_t
+    data_mat_u: jpt.ArrayLike
+
+    # DCC parameters Q_t
+    data_tns_Q: jpt.ArrayLike
+
+    # DCC covariances \Sigma_t
+    data_tns_Sigma: jpt.ArrayLike
+
+    # Simulated asset returns
+    data_mat_returns: jpt.ArrayLike
+
+
+def _generate_random_cov_mat(
+    key: KeyArrayLike, dim: int
+) -> jpt.Float[jpt.Array, "dim dim"]:
     """
     Generate a random covariance-variance matrix (i.e. symmetric and PSD).
     """
@@ -90,15 +165,22 @@ def _generate_random_cov_mat(key: KeyArrayLike, dim: int) -> Array:
     return mat_sigma
 
 
-def _calc_demean_returns(mat_returns: Array, vec_mu: NDArray) -> Array:
+def _calc_demean_returns(
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    vec_mu: jpt.Float[jpt.Array, "dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Calculate \\epsilon_t = R_t - \\mu_t
     """
-    return mat_returns - vec_mu
+    mat_epsilon = mat_returns - vec_mu
+    return mat_epsilon
 
 
 @jax.jit
-def _calc_unexpected_excess_rtn(mat_Sigma: Array, vec_z: Array) -> Array:
+def _calc_unexpected_excess_rtn(
+    mat_Sigma: jpt.Float[jpt.Array, "num_sample dim"],
+    vec_z: jpt.Float[jpt.Array, "dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Return \\epsilon_t = \\Sigma_t^{1/2} z_t.
 
@@ -115,7 +197,7 @@ def _calc_unexpected_excess_rtn(mat_Sigma: Array, vec_z: Array) -> Array:
 
 @jax.jit
 def _calc_normalized_unexpected_excess_rtn(
-    vec_sigma: Array, vec_epsilon: Array
+    vec_sigma: jpt.Float[jpt.Array, "dim"], vec_epsilon: jpt.Float[jpt.Array, "dim"]
 ) -> Array:
     """
     Return u_t = D_t^{-1} \\epsilon_t
@@ -128,11 +210,11 @@ def _calc_normalized_unexpected_excess_rtn(
 
 @jax.jit
 def _calc_mat_Q(
-    vec_delta: NDArray,
-    vec_u_t_minus_1: Array,
-    mat_Q_t_minus_1: Array,
-    mat_Qbar: Array,
-) -> Array:
+    vec_delta: jpt.Float[jpt.Array, "dim"],
+    vec_u_t_minus_1: jpt.Float[jpt.Array, "dim"],
+    mat_Q_t_minus_1: jpt.Float[jpt.Array, "dim dim"],
+    mat_Qbar: jpt.Float[jpt.Array, "dim dim"],
+) -> jpt.Float[jpt.Array, "dim dim"]:
     """
     Return the Q_t matrix of the DCC model
     """
@@ -145,7 +227,9 @@ def _calc_mat_Q(
 
 
 @jax.jit
-def _calc_mat_Gamma(mat_Q: Array) -> Array:
+def _calc_mat_Gamma(
+    mat_Q: jpt.Float[jpt.Array, "dim dim"]
+) -> jpt.Float[jpt.Array, "dim dim"]:
     """
     Return the \\Gamma_t matrix of the DCC model
     """
@@ -156,7 +240,9 @@ def _calc_mat_Gamma(mat_Q: Array) -> Array:
 
 
 @jax.jit
-def _calc_mat_Sigma(vec_sigma: Array, mat_Gamma: Array) -> Array:
+def _calc_mat_Sigma(
+    vec_sigma: jpt.Float[jpt.Array, "dim"], mat_Gamma: jpt.Float[jpt.Array, "dim dim"]
+) -> jpt.Float[jpt.Array, "dim dim"]:
     """
     Return the covariance \\Sigma_t = D_t \\Gamma_t D_t,
     where D_t is a diagonal matrix of \\sigma_{i,t}.
@@ -169,21 +255,27 @@ def _calc_mat_Sigma(vec_sigma: Array, mat_Gamma: Array) -> Array:
 
 def simulate_dcc(
     key: KeyArrayLike,
-    data_z: Array,
-    vec_omega: NDArray,
-    vec_beta: NDArray,
-    vec_alpha: NDArray,
-    vec_psi: NDArray,
-    vec_delta: NDArray,
-    mat_Qbar: Array,
-) -> tp.Tuple[Array, Array]:
+    data_z: jpt.Float[jpt.Array, "num_sample dim"],
+    vec_omega: jpt.Float[jpt.Array, "dim"],
+    vec_beta: jpt.Float[jpt.Array, "dim"],
+    vec_alpha: jpt.Float[jpt.Array, "dim"],
+    vec_psi: jpt.Float[jpt.Array, "dim"],
+    vec_delta: jpt.Float[jpt.Array, "dim"],
+    mat_Qbar: jpt.Float[jpt.Array, "dim dim"],
+) -> tp.Tuple[
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_epsilon
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_sigma
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_u
+    jpt.Float[jpt.Array, "num_sample dim dim"],  # tns_Q
+    jpt.Float[jpt.Array, "num_sample dim dim"],  # tns_Sigma
+]:
     """
     Simulate a DCC model
     """
     logger.info("Begin DCC simulation.")
 
-    num_sample = data_z.shape[0]
-    dim = data_z.shape[1]
+    num_sample = jnp.shape(data_z)[0]
+    dim = jnp.shape(data_z)[1]
 
     # Initial conditions at t = 0
     vec_z_0 = data_z[0, :]
@@ -261,14 +353,22 @@ def simulate_dcc(
 
     # Convenient output form
     mat_epsilon = jnp.array(lst_epsilon)
+    mat_sigma = jnp.array(lst_sigma)
+    mat_u = jnp.array(lst_u)
+    tns_Q = jnp.array(lst_Q)
     tns_Sigma = jnp.array(lst_Sigma)
-    return mat_epsilon, tns_Sigma
+    return mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma
 
 
 @jax.jit
 def _calc_asymmetric_garch_sigma2(
-    vec_sigma_t_minus_1, vec_epsilon_t_minus_1, vec_omega, vec_beta, vec_alpha, vec_psi
-):
+    vec_sigma_t_minus_1: jpt.Float[jpt.Array, "dim"],
+    vec_epsilon_t_minus_1: jpt.Float[jpt.Array, "dim"],
+    vec_omega: jpt.Float[jpt.Array, "dim"],
+    vec_beta: jpt.Float[jpt.Array, "dim"],
+    vec_alpha: jpt.Float[jpt.Array, "dim"],
+    vec_psi: jpt.Float[jpt.Array, "dim"],
+) -> jpt.Float[jpt.Array, "dim"]:
     """
     Compute \\sigma_{i,t}^2 of the asymmetric-GARCH(1,1) model
     """
@@ -282,13 +382,13 @@ def _calc_asymmetric_garch_sigma2(
 
 
 def _calc_trajectory_uvar_vol(
-    mat_epsilon: Array,
-    vec_sigma_0: Array,
-    vec_omega: NDArray,
-    vec_beta: NDArray,
-    vec_alpha: NDArray,
-    vec_psi: NDArray,
-) -> Array:
+    mat_epsilon: jpt.Float[jpt.Array, "num_sample dim"],
+    vec_sigma_0: jpt.Float[jpt.Array, "dim"],
+    vec_omega: jpt.Float[jpt.Array, "dim"],
+    vec_beta: jpt.Float[jpt.Array, "dim"],
+    vec_alpha: jpt.Float[jpt.Array, "dim"],
+    vec_psi: jpt.Float[jpt.Array, "dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Calculate the trajectory of univariate vol's {\\sigma_{i,t}}
     for all t based on the asymmetric-GARCH(1,1) model
@@ -324,12 +424,12 @@ def _calc_trajectory_uvar_vol(
 
 
 def _calc_trajectory_mvar_cov(
-    mat_epsilon: Array,
-    mat_sigma: Array,
-    mat_Q_0: Array,
-    vec_delta: NDArray,
-    mat_Qbar: Array,
-) -> Array:
+    mat_epsilon: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_sigma: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_Q_0: jpt.Float[jpt.Array, "num_sample dim"],
+    vec_delta: jpt.Float[jpt.Array, "dim"],
+    mat_Qbar: jpt.Float[jpt.Array, "num_sample dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim dim"]:
     """
     Calculate the trajectory of multivariate covariances
     {\\Sigma_t} based on the DCC model.
@@ -392,8 +492,9 @@ def _calc_trajectory_mvar_cov(
 
 
 def _calc_trajectory_normalized_unexp_returns(
-    mat_sigma: Array, mat_epsilon: Array
-) -> Array:
+    mat_sigma: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_epsilon: jpt.Float[jpt.Array, "num_sample dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Calculate the trajectory of u_t = D_t^{-1}\\epsilon_t
     """
@@ -401,43 +502,9 @@ def _calc_trajectory_normalized_unexp_returns(
     return mat_u
 
 
-def simulate_returns(
-    seed: int,
-    dim: int,
-    num_sample: int,
-    dict_params_mean,
-    dict_params_z,
-    dict_params_dcc_uvar_vol,
-    dict_params_dcc_mvar_cor,
-    num_cores: int,
-):
-    key = random.key(seed)
-
-    # Simulate the innovations
-    data_z = sgt.sample_mvar_sgt(
-        key=key, num_sample=num_sample, num_cores=num_cores, **dict_params_z
-    )
-
-    # Simulate a DCC model and obtain \epsilon_t
-    mat_epsilon, _ = simulate_dcc(
-        key=key, data_z=data_z, **dict_params_dcc_uvar_vol, **dict_params_dcc_mvar_cor
-    )
-
-    # Set the asset mean
-    vec_mu = dict_params_mean["vec_mu"]
-
-    # Asset returns
-    mat_returns = vec_mu + mat_epsilon
-
-    # Sanity checks
-    if mat_returns.shape != (num_sample, dim):
-        logger.error("Incorrect shape for the simulated returns.")
-
-    logger.info("Done simulating returns")
-    return data_z, mat_returns
-
-
-def _calc_innovations(vec_epsilon: Array, mat_Sigma: Array) -> Array:
+def _calc_innovations(
+    vec_epsilon: jpt.Float[jpt.Array, "dim"], mat_Sigma: jpt.Float[jpt.Array, "dim dim"]
+) -> jpt.Float[jpt.Array, "dim"]:
     """
     Return innovations z_t = \\Sigma_t^{-1/2} \\epsilon_t, where we are
     given \\epsilon_t = R_t - \\mu_t and conditional covariances
@@ -449,7 +516,10 @@ def _calc_innovations(vec_epsilon: Array, mat_Sigma: Array) -> Array:
     return vec_z
 
 
-def _calc_trajectory_innovations(mat_epsilon: Array, tns_Sigma: Array) -> Array:
+def _calc_trajectory_innovations(
+    mat_epsilon: jpt.Float[jpt.Array, "num_sample dim"],
+    tns_Sigma: jpt.Float[jpt.Array, "num_sample dim dim"],
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Calculate trajectory of innovations z_t's over the full sample.
     """
@@ -460,12 +530,18 @@ def _calc_trajectory_innovations(mat_epsilon: Array, tns_Sigma: Array) -> Array:
 
 
 def _calc_trajectories(
-    mat_returns: Array,
-    dict_init_t0_conditions: dict[str, NDArray | Array],
-    dict_params_mean: dict[str, NDArray],
-    dict_params_dcc_uvar_vol: dict[str, NDArray | Array],
-    dict_params_dcc_mvar_cor: dict[str, NDArray | Array],
-) -> tuple[Array, Array, Array, Array, Array]:
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    dict_init_t0_conditions: dict[str, jpt.Array],
+    dict_params_mean: dict[str, jpt.Array],
+    dict_params_dcc_uvar_vol: dict[str, jpt.Array],
+    dict_params_dcc_mvar_cor: dict[str, jpt.Array],
+) -> tp.Tuple[
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_epsilon
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_sigma
+    jpt.Float[jpt.Array, "num_sample dim dim"],  # tns_Sigma
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_z
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_u
+]:
     """
     Given parameters, return the trajectories {\\epsilon_t}, {\\sigma_{i,t}},
     {\\Sigma_t}, {z_t}, {u_t}
@@ -498,6 +574,77 @@ def _calc_trajectories(
     )
 
     return mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u
+
+
+def simulate_returns(
+    seed: int,
+    dim: int,
+    num_sample: int,
+    dict_params_mean,
+    dict_params_z,
+    dict_params_dcc_uvar_vol,
+    dict_params_dcc_mvar_cor,
+    num_cores: int,
+):
+    key = random.key(seed)
+
+    # Simulate the innovations
+    data_z = sgt.sample_mvar_sgt(
+        key=key, num_sample=num_sample, num_cores=num_cores, **dict_params_z
+    )
+
+    # Simulate a DCC model and obtain \epsilon_t
+    mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
+        key=key, data_z=data_z, **dict_params_dcc_uvar_vol, **dict_params_dcc_mvar_cor
+    )
+
+    # Set the asset mean
+    vec_mu = dict_params_mean["vec_mu"]
+
+    # Asset returns
+    mat_returns = vec_mu + mat_epsilon
+
+    # Sanity checks
+    if mat_returns.shape != (num_sample, dim):
+        logger.error("Incorrect shape for the simulated returns.")
+
+    logger.info("Done simulating returns")
+    return data_z, vec_mu, mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma, mat_returns
+
+
+def simulate_timevarying_returns(
+    dim: int,
+    num_sample: int,
+    dict_params_mean_true: tp.Dict[str, jpt.Array],
+    dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
+    dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
+    data_z_savepath: None | os.PathLike,
+):
+    if data_z_savepath is None:
+
+    # Simulate a DCC model and obtain \epsilon_t
+    mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
+        key=key,
+        data_z=data_z,
+        **dict_params_dcc_uvar_vol_true,
+        **dict_params_dcc_mvar_cor_true,
+    )
+
+    # Set the asset mean
+    vec_mu = dict_params_mean_true["vec_mu"]
+
+    # Asset returns
+    mat_returns = vec_mu + mat_epsilon
+
+    # Sanity checks
+    try:
+        if mat_returns.shape != (num_sample, dim):
+            raise ValueError("Incorrect shape for the simulated returns.")
+    except Exception as e:
+        logger.error(str(e))
+
+    logger.info("Done simulating returns")
+    return data_z, mat_returns
 
 
 def dcc_loglik(
@@ -634,93 +781,6 @@ def _make_dict_params_dcc_mvar_cor(
     dict_params_dcc_mvar_cor[MAT_QBAR] = mat_Qbar
 
     return dict_params_dcc_mvar_cor
-
-
-# def _check_params_z(
-#     dim: int, dict_params_z: tp.Dict[str, NDArray | Array], min_moments: int = 4
-# ) -> bool:
-#     """
-#     Check the valididty of parameters of z_t.
-#     """
-#     # HACK:
-#     # vec_lbda = dict_params_z[VEC_LBDA]
-#     # vec_p0 = dict_params_z[VEC_P0]
-#     # vec_q0 = dict_params_z[VEC_Q0]
-#     #
-#     # if jnp.size(vec_lbda) != dim:
-#     #     return False
-#     #
-#     # if jnp.size(vec_p0) != dim:
-#     #     return False
-#     #
-#     # if jnp.size(vec_q0) != dim:
-#     #     return False
-#     #
-#     # if jnp.any(vec_lbda <= -1):
-#     #     return False
-#     #
-#     # if jnp.any(vec_lbda >= -1):
-#     #     return False
-#     #
-#     # if jnp.any(vec_p0 <= 0):
-#     #     return False
-#     #
-#     # if jnp.any(vec_q0 <= 0):
-#     #     return False
-#     #
-#     # if jnp.any(vec_p0 * vec_q0 < min_moments):
-#     #     return False
-#
-#     return True
-#
-#
-# def _check_params_dcc_uvar_vol(
-#     dim: int, dict_params_dcc_uvar_vol: tp.Dict[str, NDArray | Array]
-# ) -> bool:
-#     """
-#     Check the valididty of parameters of univariate volatilities.
-#     """
-#     # HACK:
-#     # for _, val in dict_params_dcc_uvar_vol.items():
-#     #     if jnp.size(val) != dim:
-#     #         return False
-#     #
-#     #     if jnp.any(val) < 0:
-#     #         return False
-#
-#     return True
-#
-#
-# def _check_params_dcc_mvar_cor(
-#     dim: int, dict_params_dcc_mvar_cor: tp.Dict[str, NDArray | Array]
-# ) -> bool:
-#     """
-#     Check the valididty of DCC parameters
-#     """
-#     # HACK:
-#     # vec_delta = dict_params_dcc_mvar_cor[VEC_DELTA]
-#     # mat_Qbar = dict_params_dcc_mvar_cor[MAT_QBAR]
-#     #
-#     # # Check constraints on \delta_1, \delta_2
-#     # if jnp.size(vec_delta) != 2:
-#     #     return False
-#     #
-#     # if jnp.any(vec_delta < 0):
-#     #     return False
-#     #
-#     # if jnp.any(vec_delta > 1):
-#     #     return False
-#     #
-#     # if jnp.sum(vec_delta > 1):
-#     #     return False
-#     #
-#     # # Check constraints on \bar{Q}
-#     # # \bar{Q} should be PSD. But for speed purposes, just
-#     # # check dimensions.
-#     # if mat_Qbar.shape != (dim, dim):
-#     #     return False
-#
-#     return True
 
 
 def _objfun_dcc_loglik(
@@ -971,6 +1031,40 @@ if __name__ == "__main__":
         DICT_PARAMS_DCC_UVAR_VOL: dict_params_dcc_uvar_vol_true,
         DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_true,
     }
+
+    data_z_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.npz"
+    # Read in the already saved simulated innovations
+    # with time-varying parameters
+    with open(data_z_savepath, "rb") as f:
+        npzfile = jnp.load(f)
+
+        # Sanity checks
+        try:
+            if dim != npzfile["dim"]:
+                raise ValueError(
+                    "'dim' for simulated innovations data does not match what's been inputted"
+                )
+
+            if num_sample != npzfile["num_sample"]:
+                raise ValueError(
+                    "'num_sample' for simulated innovations data does not match what's been inputted"
+                )
+        except Exception as e:
+            logger.error(str(e))
+
+        data_z = npzfile["data_mat_z"]
+
+    simulate_timevarying_returns(
+        dim=dim,
+        num_sample=num_sample,
+        dict_params_mean_true=dict_params_mean_true,
+        dict_params_z=dict_params_z_true,
+        dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
+        dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        data_z_savepath=data_z_savepath,
+    )
+
+    breakpoint()
 
     data_z, mat_returns = simulate_returns(
         seed=seed,
