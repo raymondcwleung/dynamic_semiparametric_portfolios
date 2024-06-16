@@ -9,8 +9,9 @@ import jax.test_util
 from jax import Array
 from jax.typing import ArrayLike, DTypeLike
 
+import os
 import logging
-
+from pathlib import Path
 
 import itertools
 from functools import partial
@@ -37,6 +38,9 @@ logging.basicConfig(
     format="%(levelname)s | %(asctime)s | %(message)s",
     filemode="w",
 )
+
+
+RUN_TIMEVARYING_SGT_SIMULATIONS = False
 
 
 def positive_part(x: Array) -> Array:
@@ -406,6 +410,7 @@ def sample_mvar_timevarying_sgt(
     vec_lbda_init_t0: Array,
     vec_p0_init_t0: Array,
     vec_q0_init_t0: Array,
+    save_path: None | os.PathLike,
 ) -> tuple[Array, Array, Array, Array]:
     """
     Generate samples of time-varying SGT random
@@ -469,80 +474,85 @@ def sample_mvar_timevarying_sgt(
 
         if tt % 100 == 0:
             logger.info(f"... complete iteration {tt}/{num_sample}")
-    mat_lbda, mat_p0, mat_q0, mat_z = carry
+
+    data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z = carry
 
     logger.info(f"Done time-varying SGT simulation")
 
-    return mat_lbda, mat_p0, mat_q0, mat_z
+    # Save
+    if save_path is not None:
+        with open(save_path, "wb") as f:
+            jnp.savez(
+                f,
+                num_sample=num_sample,
+                dim=dim,
+                mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+                mat_p0_tvparams_true=mat_p0_tvparams_true,
+                mat_q0_tvparams_true=mat_q0_tvparams_true,
+                vec_z_init_t0=vec_z_init_t0,
+                vec_lbda_init_t0=vec_lbda_init_t0,
+                vec_p0_init_t0=vec_p0_init_t0,
+                vec_q0_init_t0=vec_q0_init_t0,
+                data_mat_lbda=data_mat_lbda,
+                data_mat_p0=data_mat_p0,
+                data_mat_q0=data_mat_q0,
+                data_mat_z=data_mat_z,
+            )
+        logger.info(f"Saved SGT simulations to {str(save_path)}")
+
+    return data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z
 
 
 if __name__ == "__main__":
-    seed = 1234567
-    key = random.key(seed)
-    rng = np.random.default_rng(seed)
-    num_sample = int(1e3)
-    dim = 5
-    num_cores = 8
+    if RUN_TIMEVARYING_SGT_SIMULATIONS:
+        seed = 1234567
+        key = random.key(seed)
+        rng = np.random.default_rng(seed)
+        num_sample = int(3e3)
+        dim = 5
+        num_cores = 8
+        save_path = Path().resolve() / "data_timevarying_sgt.npz"
 
-    num_lbda_tvparams = 3
-    num_p0_tvparams = 3
-    num_q0_tvparams = 3
+        num_lbda_tvparams = 3
+        num_p0_tvparams = 3
+        num_q0_tvparams = 3
 
-    vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
-    vec_p0_true = rng.uniform(2, 10, dim)
-    vec_q0_true = rng.uniform(2, 10, dim)
+        vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
+        vec_p0_true = rng.uniform(2, 10, dim)
+        vec_q0_true = rng.uniform(2, 10, dim)
 
-    mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (num_lbda_tvparams, dim))
-    mat_p0_tvparams_true = rng.uniform(-1, 1, (num_p0_tvparams, dim))
-    mat_q0_tvparams_true = rng.uniform(-1, 1, (num_q0_tvparams, dim))
-    # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
-    mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
-    mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
+        mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (num_lbda_tvparams, dim))
+        mat_p0_tvparams_true = rng.uniform(-1, 1, (num_p0_tvparams, dim))
+        mat_q0_tvparams_true = rng.uniform(-1, 1, (num_q0_tvparams, dim))
+        # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
+        mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
+        mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
 
-    vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
-    vec_z_init_t0 = jnp.repeat(0.0, dim)
-    vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
-    vec_p0_init_t0 = rng.uniform(2, 4, dim)
-    vec_q0_init_t0 = rng.uniform(2, 4, dim)
+        vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
+        vec_z_init_t0 = jnp.repeat(0.0, dim)
+        vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
+        vec_p0_init_t0 = rng.uniform(2, 4, dim)
+        vec_q0_init_t0 = rng.uniform(2, 4, dim)
 
-    mat_lbda_tvparams = mat_lbda_tvparams_true
-    mat_p0_tvparams = mat_p0_tvparams_true
-    mat_q0_tvparams = mat_q0_tvparams_true
+        mat_lbda_tvparams = mat_lbda_tvparams_true
+        mat_p0_tvparams = mat_p0_tvparams_true
+        mat_q0_tvparams = mat_q0_tvparams_true
 
-    # carry = jax.lax.fori_loop(
-    #     lower=1,
-    #     upper=num_sample,
-    #     body_fun=_body_fun,
-    #     init_val=(mat_lbda, mat_p0, mat_q0, mat_z),
-    # )
+        data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z = (
+            sample_mvar_timevarying_sgt(
+                key=key,
+                num_sample=num_sample,
+                mat_lbda_tvparams=mat_lbda_tvparams_true,
+                mat_p0_tvparams=mat_p0_tvparams_true,
+                mat_q0_tvparams=mat_q0_tvparams_true,
+                vec_lbda_init_t0=vec_lbda_init_t0,
+                vec_p0_init_t0=vec_p0_init_t0,
+                vec_q0_init_t0=vec_q0_init_t0,
+                save_path=save_path,
+            )
+        )
 
-    mat_lbda, mat_p0, mat_q0, mat_z = sample_mvar_timevarying_sgt(
-        key=key,
-        num_sample=num_sample,
-        mat_lbda_tvparams=mat_lbda_tvparams_true,
-        mat_p0_tvparams=mat_p0_tvparams_true,
-        mat_q0_tvparams=mat_q0_tvparams_true,
-        vec_lbda_init_t0=vec_lbda_init_t0,
-        vec_p0_init_t0=vec_p0_init_t0,
-        vec_q0_init_t0=vec_q0_init_t0,
-    )
-
-    plt.plot(mat_p0[10:, 0])
-    plt.show()
-
-    breakpoint()
-
-    data = sample_mvar_sgt(
-        key=key,
-        num_sample=num_sample,
-        vec_lbda=vec_lbda_true,
-        vec_p0=vec_p0_true,
-        vec_q0=vec_q0_true,
-        num_cores=num_cores,
-    )
-
-    num_trials = 2
-
-    hi = mle_mvar_sgt(key=key, data=data, num_trials=num_trials)
-
-    breakpoint()
+    # Load simulations
+    save_path = Path().resolve() / "data_timevarying_sgt.npz"
+    with open(save_path, "rb") as f:
+        npzfile = jnp.load(f)
