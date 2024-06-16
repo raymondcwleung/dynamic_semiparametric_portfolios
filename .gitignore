@@ -1,3 +1,8 @@
+*.npz
+__pycache__/
+sgt/
+
+
 ## Core latex/pdflatex auxiliary files:
 *.aux
 *.lof
