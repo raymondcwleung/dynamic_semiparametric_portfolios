@@ -1,6 +1,7 @@
 *.npz
 __pycache__/
 sgt/
+*.pkl
 
 
 ## Core latex/pdflatex auxiliary files:
