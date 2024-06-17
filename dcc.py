@@ -571,43 +571,43 @@ def _calc_trajectories(
     return mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u
 
 
-def simulate_returns(
-    seed: int,
-    dim: int,
-    num_sample: int,
-    dict_params_mean,
-    dict_params_z,
-    dict_params_dcc_uvar_vol,
-    dict_params_dcc_mvar_cor,
-    num_cores: int,
-):
-    key = random.key(seed)
+# def simulate_returns(
+#     seed: int,
+#     dim: int,
+#     num_sample: int,
+#     dict_params_mean,
+#     dict_params_z,
+#     dict_params_dcc_uvar_vol,
+#     dict_params_dcc_mvar_cor,
+#     num_cores: int,
+# ):
+#     key = random.key(seed)
+#
+#     # Simulate the innovations
+#     data_z = sgt.sample_mvar_sgt(
+#         key=key, num_sample=num_sample, num_cores=num_cores, **dict_params_z
+#     )
+#
+#     # Simulate a DCC model
+#     mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
+#         key=key, data_z=data_z, **dict_params_dcc_uvar_vol, **dict_params_dcc_mvar_cor
+#     )
+#
+#     # Set the asset mean
+#     vec_mu = dict_params_mean["vec_mu"]
+#
+#     # Asset returns
+#     mat_returns = vec_mu + mat_epsilon
+#
+#     # Sanity checks
+#     if mat_returns.shape != (num_sample, dim):
+#         logger.error("Incorrect shape for the simulated returns.")
+#
+#     logger.info("Done simulating returns")
+#     return data_z, vec_mu, mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma, mat_returns
 
-    # Simulate the innovations
-    data_z = sgt.sample_mvar_sgt(
-        key=key, num_sample=num_sample, num_cores=num_cores, **dict_params_z
-    )
 
-    # Simulate a DCC model
-    mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
-        key=key, data_z=data_z, **dict_params_dcc_uvar_vol, **dict_params_dcc_mvar_cor
-    )
-
-    # Set the asset mean
-    vec_mu = dict_params_mean["vec_mu"]
-
-    # Asset returns
-    mat_returns = vec_mu + mat_epsilon
-
-    # Sanity checks
-    if mat_returns.shape != (num_sample, dim):
-        logger.error("Incorrect shape for the simulated returns.")
-
-    logger.info("Done simulating returns")
-    return data_z, vec_mu, mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma, mat_returns
-
-
-def _get_innovations(
+def _get_sgt_innovations(
     data_z_savepath: None | os.PathLike,
     # Params for z_t innovations if data_z_savepath not provided
     mat_lbda_tvparams_true: None | jpt.Float[jpt.Array, "num_lbda_tvparams dim"] = None,
@@ -618,7 +618,7 @@ def _get_innovations(
     vec_q0_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
 ) -> sgt.SimulatedInnovations:
     """
-    Get the time-varying z_t innovations, either by directly simulating from scratch
+    Get the time-varying z_t SGT innovations, either by directly simulating from scratch
     or loading in the pre-simulated data.
     """
     if data_z_savepath is None:
@@ -643,10 +643,9 @@ def _get_innovations(
         return siminnov
 
 
-def simulate_timevarying_returns(
+def simulate_dcc_sgt_garch(
     dim: int,
     num_sample: int,
-    dict_params_z: tp.Dict[str, jpt.Array],
     dict_params_mean_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
@@ -654,9 +653,43 @@ def simulate_timevarying_returns(
     data_z_savepath: None | os.PathLike,
     **kwargs,
 ) -> SimulatedReturns:
-
+    """
+    Simulate DCC-SGT-GARCH.
+    """
     # Obtain the simulated innovations z_t
-    siminnov = _get_innovations(data_z_savepath=data_z_savepath, **kwargs)
+    siminnov = _get_sgt_innovations(data_z_savepath=data_z_savepath, **kwargs)
+
+    # Obtain the simulated asset returns
+    simreturns = _simulate_returns(
+        dim=dim,
+        num_sample=num_sample,
+        siminnov=siminnov,
+        dict_params_mean_true=dict_params_mean_true,
+        dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
+        dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        data_simreturns_savepath=data_simreturns_savepath,
+    )
+
+    return simreturns
+
+
+def _simulate_returns(
+    dim: int,
+    num_sample: int,
+    siminnov: sgt.SimulatedInnovations,
+    dict_params_mean_true: tp.Dict[str, jpt.Array],
+    dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
+    dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
+    data_simreturns_savepath: os.PathLike,
+) -> SimulatedReturns:
+    """
+    Simulate asset returns.
+
+    In particular, this function allows for varying the innovations z_t specifications
+    while keeping the DCC-GARCH structure. In other words, this function constructs a
+    DCC-X-GARCH, where X depends on the specifications choice of z_t.
+    """
+    # Load in the innovations
     data_z = siminnov.data_mat_z
 
     # Sanity checks
@@ -1102,7 +1135,7 @@ if __name__ == "__main__":
 
     data_z_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.pkl"
     data_simreturns_savepath = pathlib.Path().resolve() / "data_simreturns.pkl"
-    simulate_timevarying_returns(
+    simulate_dcc_sgt_garch(
         dim=dim,
         num_sample=num_sample,
         dict_params_mean_true=dict_params_mean_true,
@@ -1115,7 +1148,7 @@ if __name__ == "__main__":
 
     breakpoint()
 
-    data_z, mat_returns = simulate_returns(
+    data_z, mat_returns = _simulate_returns(
         seed=seed,
         dim=dim,
         num_sample=num_sample,
