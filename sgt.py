@@ -79,7 +79,7 @@ class SimulatedInnovations:
     data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
 
 
-RUN_TIMEVARYING_SGT_SIMULATIONS = False
+RUN_TIMEVARYING_SGT_SIMULATIONS = True
 NUM_LBDA_TVPARAMS = 3
 NUM_P0_TVPARAMS = 3
 NUM_Q0_TVPARAMS = 3
@@ -461,12 +461,7 @@ def sample_mvar_timevarying_sgt(
     vec_p0_init_t0: jpt.Float[jpt.Array, "dim"],
     vec_q0_init_t0: jpt.Float[jpt.Array, "dim"],
     save_path: None | os.PathLike,
-) -> tp.Tuple[
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_lbda
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_p0
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_q0
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_z
-]:
+) -> SimulatedInnovations:
     """
     Generate samples of time-varying SGT random
     vectors by inverse transform sampling.
@@ -554,7 +549,7 @@ def sample_mvar_timevarying_sgt(
             pickle.dump(siminnov, f)
         logger.info(f"Saved SGT simulations to {str(save_path)}")
 
-    return data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z
+    return siminnov
 
 
 if __name__ == "__main__":
@@ -562,7 +557,7 @@ if __name__ == "__main__":
         seed = 1234567
         key = random.key(seed)
         rng = np.random.default_rng(seed)
-        num_sample = int(3e3)
+        num_sample = int(3e2)
         dim = 5
         num_cores = 8
         save_path = Path().resolve() / "data_timevarying_sgt.pkl"

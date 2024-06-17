@@ -16,6 +16,7 @@ import numpy.typing as npt
 import logging
 import os
 import pathlib
+import pickle
 
 from dataclasses import dataclass
 
@@ -46,6 +47,7 @@ import scipy
 import matplotlib.pyplot as plt
 
 import sgt
+from sgt import SimulatedInnovations
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
@@ -96,44 +98,23 @@ class SimulatedReturns:
     num_sample: int
 
     ################################################################
+    ## Object for the innovations z_t
+    ################################################################
+    siminnov: sgt.SimulatedInnovations
+
+    ################################################################
     ## Parameters
     ################################################################
-    # Parameters for the time-varying innovations z_t
-    mat_lbda_tvparams_true: tp.Dict[str, jpt.ArrayLike]
-    mat_p0_tvparams_true: tp.Dict[str, jpt.ArrayLike]
-    mat_q0_tvparams_true: tp.Dict[str, jpt.ArrayLike]
-
     # Parameters for the mean vector
-    dict_params_mean: tp.Dict[str, jpt.ArrayLike]
+    dict_params_mean_true: tp.Dict[str, jpt.ArrayLike]
 
     # Parameters for the DCC
-    dict_params_dcc_uvar_vol: tp.Dict[str, jpt.ArrayLike]
-    dict_params_dcc_mvar_cor: tp.Dict[str, jpt.ArrayLike]
-
-    ################################################################
-    ## Initial conditions
-    ################################################################
-    # Time t = 0 initial conditions for the innovations z_t
-    vec_z_init_t0: jpt.ArrayLike
-    vec_lbda_init_t0: jpt.ArrayLike
-    vec_p0_init_t0: jpt.ArrayLike
-    vec_q0_init_t0: jpt.ArrayLike
-
-    # Time t = 0 initial conditions for the DCC
-    vec_sigma_init_t0: jpt.ArrayLike
-    mat_Q_init_t0: jpt.ArrayLike
+    dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.ArrayLike]
+    dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.ArrayLike]
 
     ################################################################
     ## Simulated data
     ################################################################
-    # Time-varying parameters related to z_t
-    data_mat_lbda: jpt.ArrayLike
-    data_mat_p0: jpt.ArrayLike
-    data_mat_q0: jpt.ArrayLike
-
-    # Innovations z_t
-    data_mat_z: jpt.ArrayLike
-
     # Unexpected excess returns \epsilon_t
     data_mat_epsilon: jpt.ArrayLike
 
@@ -163,6 +144,18 @@ def _generate_random_cov_mat(
     mat_sigma = jnp.transpose(mat_A) @ mat_A
 
     return mat_sigma
+
+
+def _calc_mean_return(
+    num_sample: int, dim: int, dict_params_mean: tp.Dict[str, jpt.Array]
+) -> jpt.Float[jpt.Array, "num_sample dim"]:
+    """
+    Compute the mean returns \\mu
+    """
+    vec_mu = dict_params_mean["vec_mu"]
+
+    mat_mu = jnp.tile(vec_mu, num_sample).reshape(num_sample, dim)
+    return mat_mu
 
 
 def _calc_demean_returns(
@@ -279,14 +272,16 @@ def simulate_dcc(
 
     # Initial conditions at t = 0
     vec_z_0 = data_z[0, :]
-    mat_Sigma_0 = _generate_random_cov_mat(key=key, dim=dim)
-    vec_sigma_0 = jnp.sqrt(jnp.diag(mat_Sigma_0))
-    vec_epsilon_0 = _calc_unexpected_excess_rtn(mat_Sigma=mat_Sigma_0, vec_z=vec_z_0)
-    vec_u_0 = _calc_normalized_unexpected_excess_rtn(
-        vec_sigma=vec_sigma_0, vec_epsilon=vec_epsilon_0
+    mat_Sigma_init_t0 = _generate_random_cov_mat(key=key, dim=dim)
+    vec_sigma_init_t0 = jnp.sqrt(jnp.diag(mat_Sigma_init_t0))
+    vec_epsilon_init_t0 = _calc_unexpected_excess_rtn(
+        mat_Sigma=mat_Sigma_init_t0, vec_z=vec_z_0
+    )
+    vec_u_init_t0 = _calc_normalized_unexpected_excess_rtn(
+        vec_sigma=vec_sigma_init_t0, vec_epsilon=vec_epsilon_init_t0
     )
     key, _ = random.split(key)
-    mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
+    mat_Q_init_t0 = _generate_random_cov_mat(key=key, dim=dim)
 
     # Init
     lst_epsilon = [jnp.empty(dim)] * num_sample
@@ -296,11 +291,11 @@ def simulate_dcc(
     lst_Sigma = [jnp.empty((dim, dim))] * num_sample
 
     # Save initial conditions
-    lst_epsilon[0] = vec_epsilon_0
-    lst_sigma[0] = vec_sigma_0
-    lst_u[0] = vec_u_0
-    lst_Q[0] = mat_Q_0
-    lst_Sigma[0] = mat_Sigma_0
+    lst_epsilon[0] = vec_epsilon_init_t0
+    lst_sigma[0] = vec_sigma_init_t0
+    lst_u[0] = vec_u_init_t0
+    lst_Q[0] = mat_Q_init_t0
+    lst_Sigma[0] = mat_Sigma_init_t0
 
     # Iterate
     for tt in range(1, num_sample):
@@ -593,7 +588,7 @@ def simulate_returns(
         key=key, num_sample=num_sample, num_cores=num_cores, **dict_params_z
     )
 
-    # Simulate a DCC model and obtain \epsilon_t
+    # Simulate a DCC model
     mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
         key=key, data_z=data_z, **dict_params_dcc_uvar_vol, **dict_params_dcc_mvar_cor
     )
@@ -612,39 +607,109 @@ def simulate_returns(
     return data_z, vec_mu, mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma, mat_returns
 
 
+def _get_innovations(
+    data_z_savepath: None | os.PathLike,
+    # Params for z_t innovations if data_z_savepath not provided
+    mat_lbda_tvparams_true: None | jpt.Float[jpt.Array, "num_lbda_tvparams dim"] = None,
+    mat_p0_tvparams_true: None | jpt.Float[jpt.Array, "num_p0_tvparams dim"] = None,
+    mat_q0_tvparams_true: None | jpt.Float[jpt.Array, "num_q0_tvparams dim"] = None,
+    vec_lbda_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
+    vec_p0_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
+    vec_q0_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
+) -> sgt.SimulatedInnovations:
+    """
+    Get the time-varying z_t innovations, either by directly simulating from scratch
+    or loading in the pre-simulated data.
+    """
+    if data_z_savepath is None:
+        siminnov = sgt.sample_mvar_timevarying_sgt(
+            key=key,
+            num_sample=num_sample,
+            mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+            mat_p0_tvparams_true=mat_p0_tvparams_true,
+            mat_q0_tvparams_true=mat_q0_tvparams_true,
+            vec_lbda_init_t0=vec_lbda_init_t0,
+            vec_p0_init_t0=vec_p0_init_t0,
+            vec_q0_init_t0=vec_q0_init_t0,
+            save_path=None,
+        )
+
+        return siminnov
+
+    else:
+        with open(data_z_savepath, "rb") as f:
+            siminnov = pickle.load(f)
+
+        return siminnov
+
+
 def simulate_timevarying_returns(
     dim: int,
     num_sample: int,
+    dict_params_z: tp.Dict[str, jpt.Array],
     dict_params_mean_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
+    data_simreturns_savepath: os.PathLike,
     data_z_savepath: None | os.PathLike,
-):
-    if data_z_savepath is None:
+    **kwargs,
+) -> SimulatedReturns:
 
-    # Simulate a DCC model and obtain \epsilon_t
-    mat_epsilon, mat_sigma, mat_u, tns_Q, tns_Sigma = simulate_dcc(
-        key=key,
-        data_z=data_z,
-        **dict_params_dcc_uvar_vol_true,
-        **dict_params_dcc_mvar_cor_true,
-    )
-
-    # Set the asset mean
-    vec_mu = dict_params_mean_true["vec_mu"]
-
-    # Asset returns
-    mat_returns = vec_mu + mat_epsilon
+    # Obtain the simulated innovations z_t
+    siminnov = _get_innovations(data_z_savepath=data_z_savepath, **kwargs)
+    data_z = siminnov.data_mat_z
 
     # Sanity checks
     try:
-        if mat_returns.shape != (num_sample, dim):
-            raise ValueError("Incorrect shape for the simulated returns.")
+        if data_z.shape[0] != num_sample:
+            raise ValueError("Incorrect 'num_sample' for the simulated innovations.")
+
+        if data_z.shape[1] != dim:
+            raise ValueError("Incorrect 'dim' for the simulated innovations.")
     except Exception as e:
         logger.error(str(e))
+        raise
+
+    # Simulate a DCC model
+    data_mat_epsilon, data_mat_sigma, data_mat_u, data_tns_Q, data_tns_Sigma = (
+        simulate_dcc(
+            key=key,
+            data_z=data_z,
+            **dict_params_dcc_uvar_vol_true,
+            **dict_params_dcc_mvar_cor_true,
+        )
+    )
+
+    # Set the asset mean
+    mat_mu = _calc_mean_return(
+        num_sample=num_sample, dim=dim, dict_params_mean=dict_params_mean_true
+    )
+
+    # Asset returns
+    data_mat_returns = mat_mu + data_mat_epsilon
 
     logger.info("Done simulating returns")
-    return data_z, mat_returns
+
+    # Save
+    simreturns = SimulatedReturns(
+        dim=dim,
+        num_sample=num_sample,
+        siminnov=siminnov,
+        dict_params_mean_true=dict_params_mean_true,
+        dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
+        dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        data_mat_epsilon=data_mat_epsilon,
+        data_mat_sigma=data_mat_sigma,
+        data_mat_u=data_mat_u,
+        data_tns_Q=data_tns_Q,
+        data_tns_Sigma=data_tns_Sigma,
+        data_mat_returns=data_mat_returns,
+    )
+    with open(data_simreturns_savepath, "wb") as f:
+        pickle.dump(simreturns, f)
+        logger.info(f"Saved DCC simulations to {str(data_simreturns_savepath)}")
+
+    return simreturns
 
 
 def dcc_loglik(
@@ -655,7 +720,7 @@ def dcc_loglik(
     dict_params_dcc_uvar_vol,
     dict_params_dcc_mvar_cor,
     neg_loglik: bool = True,
-) -> DTypeLike:
+) -> jpt.DTypeLike:
     """
     (Negative) of the likelihood of the DCC-Asymmetric GARCH(1,1) model
     """
@@ -696,6 +761,7 @@ def _make_dict_params_z(x, dim) -> tp.Dict[str, NDArray]:
             )
     except Exception as e:
         logger.error(str(e))
+        raise
 
     dict_params_z = {
         VEC_LBDA: x[0:dim],
@@ -718,6 +784,7 @@ def _make_dict_params_mean(x, dim) -> tp.Dict[str, NDArray]:
             )
     except Exception as e:
         logger.error(str(e))
+        raise
 
     dict_params_mean = {VEC_MU: x}
 
@@ -760,6 +827,7 @@ def _make_dict_params_dcc_mvar_cor(
             )
     except Exception as e:
         logger.error(str(e))
+        raise
 
     dict_params_dcc_mvar_cor[VEC_DELTA] = x
 
@@ -786,10 +854,10 @@ def _make_dict_params_dcc_mvar_cor(
 def _objfun_dcc_loglik(
     x,
     make_dict_params_fun,
-    dict_params: tp.Dict[str, tp.Dict[str, Array]] | tp.Dict[str, tp.Dict[str, Array]],
-    dict_init_t0_conditions: tp.Dict[str, Array] | tp.Dict[str, NDArray],
-    mat_returns: Array,
-) -> DTypeLike | float:
+    dict_params: tp.Dict[str, jpt.Array],
+    dict_init_t0_conditions: tp.Dict[str, jpt.Array],
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+) -> jpt.DTypeLike:
     dim = mat_returns.shape[1]
 
     # Construct the dict for the parameters
@@ -835,8 +903,8 @@ def _objfun_dcc_loglik(
 
 
 def _make_params_array_from_dict_params(
-    dict_params: tp.Dict[str, jax.Array] | tp.Dict[str, npt.NDArray]
-) -> Array:
+    dict_params: tp.Dict[str, jpt.Array]
+) -> jpt.Array:
     """
     Take in a dictionary of parameters and flatten them to an
     array in preparation for optimization.
@@ -997,8 +1065,8 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(1e3)
-    dim = 3
+    num_sample = int(3e2)
+    dim = 5
     num_cores = 8
 
     # Parameters for the mean returns vector
@@ -1032,28 +1100,8 @@ if __name__ == "__main__":
         DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_true,
     }
 
-    data_z_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.npz"
-    # Read in the already saved simulated innovations
-    # with time-varying parameters
-    with open(data_z_savepath, "rb") as f:
-        npzfile = jnp.load(f)
-
-        # Sanity checks
-        try:
-            if dim != npzfile["dim"]:
-                raise ValueError(
-                    "'dim' for simulated innovations data does not match what's been inputted"
-                )
-
-            if num_sample != npzfile["num_sample"]:
-                raise ValueError(
-                    "'num_sample' for simulated innovations data does not match what's been inputted"
-                )
-        except Exception as e:
-            logger.error(str(e))
-
-        data_z = npzfile["data_mat_z"]
-
+    data_z_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.pkl"
+    data_simreturns_savepath = pathlib.Path().resolve() / "data_simreturns.pkl"
     simulate_timevarying_returns(
         dim=dim,
         num_sample=num_sample,
@@ -1061,6 +1109,7 @@ if __name__ == "__main__":
         dict_params_z=dict_params_z_true,
         dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
         dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        data_simreturns_savepath=data_simreturns_savepath,
         data_z_savepath=data_z_savepath,
     )
 
