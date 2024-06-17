@@ -57,6 +57,10 @@ jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 
 logger = logging.getLogger(__name__)
 
+NUM_LBDA_TVPARAMS = 3
+NUM_P0_TVPARAMS = 3
+NUM_Q0_TVPARAMS = 3
+
 DICT_INIT_T0_CONDITIONS = "dict_init_t0_conditions"
 DICT_PARAMS_MEAN = "dict_params_mean"
 DICT_PARAMS_Z = "dict_params_z"
@@ -134,7 +138,7 @@ class SimulatedReturns:
     data_mat_returns: jpt.ArrayLike
 
 
-def _generate_random_cov_mat(
+def generate_random_cov_mat(
     key: KeyArrayLike, dim: int
 ) -> jpt.Float[jpt.Array, "dim dim"]:
     """
@@ -255,6 +259,8 @@ def simulate_dcc(
     vec_psi: jpt.Float[jpt.Array, "dim"],
     vec_delta: jpt.Float[jpt.Array, "dim"],
     mat_Qbar: jpt.Float[jpt.Array, "dim dim"],
+    mat_Sigma_init_t0: jpt.Float[jpt.Array, "dim dim"],
+    mat_Q_init_t0: jpt.Float[jpt.Array, "dim dim"],
 ) -> tp.Tuple[
     jpt.Float[jpt.Array, "num_sample dim"],  # mat_epsilon
     jpt.Float[jpt.Array, "num_sample dim"],  # mat_sigma
@@ -272,7 +278,6 @@ def simulate_dcc(
 
     # Initial conditions at t = 0
     vec_z_0 = data_z[0, :]
-    mat_Sigma_init_t0 = _generate_random_cov_mat(key=key, dim=dim)
     vec_sigma_init_t0 = jnp.sqrt(jnp.diag(mat_Sigma_init_t0))
     vec_epsilon_init_t0 = _calc_unexpected_excess_rtn(
         mat_Sigma=mat_Sigma_init_t0, vec_z=vec_z_0
@@ -280,8 +285,6 @@ def simulate_dcc(
     vec_u_init_t0 = _calc_normalized_unexpected_excess_rtn(
         vec_sigma=vec_sigma_init_t0, vec_epsilon=vec_epsilon_init_t0
     )
-    key, _ = random.split(key)
-    mat_Q_init_t0 = _generate_random_cov_mat(key=key, dim=dim)
 
     # Init
     lst_epsilon = [jnp.empty(dim)] * num_sample
@@ -608,7 +611,9 @@ def _calc_trajectories(
 
 
 def _get_sgt_innovations(
-    data_z_savepath: None | os.PathLike,
+    key: KeyArrayLike,
+    num_sample: int,
+    data_siminnov_savepath: None | os.PathLike,
     # Params for z_t innovations if data_z_savepath not provided
     mat_lbda_tvparams_true: None | jpt.Float[jpt.Array, "num_lbda_tvparams dim"] = None,
     mat_p0_tvparams_true: None | jpt.Float[jpt.Array, "num_p0_tvparams dim"] = None,
@@ -616,12 +621,13 @@ def _get_sgt_innovations(
     vec_lbda_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
     vec_p0_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
     vec_q0_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
+    vec_z_init_t0: None | jpt.Float[jpt.Array, "dim"] = None,
 ) -> sgt.SimulatedInnovations:
     """
     Get the time-varying z_t SGT innovations, either by directly simulating from scratch
     or loading in the pre-simulated data.
     """
-    if data_z_savepath is None:
+    if data_siminnov_savepath is None:
         siminnov = sgt.sample_mvar_timevarying_sgt(
             key=key,
             num_sample=num_sample,
@@ -631,42 +637,74 @@ def _get_sgt_innovations(
             vec_lbda_init_t0=vec_lbda_init_t0,
             vec_p0_init_t0=vec_p0_init_t0,
             vec_q0_init_t0=vec_q0_init_t0,
+            vec_z_init_t0=vec_z_init_t0,
             save_path=None,
         )
 
         return siminnov
 
     else:
-        with open(data_z_savepath, "rb") as f:
+        with open(data_siminnov_savepath, "rb") as f:
             siminnov = pickle.load(f)
 
         return siminnov
 
 
 def simulate_dcc_sgt_garch(
+    key: KeyArrayLike,
     dim: int,
     num_sample: int,
+    # SGT parameters
+    mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"],
+    mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"],
+    mat_q0_tvparams_true: jpt.Float[jpt.Array, "num_q0_tvparams dim"],
+    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_z_init_t0: jpt.Float[jpt.Array, "dim"],
+    # DCC-GARCH parameters
     dict_params_mean_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
+    mat_Sigma_init_t0: jpt.Float[jpt.Array, "dim dim"],
+    mat_Q_init_t0: jpt.Float[jpt.Array, "dim dim"],
+    # Saving paths
     data_simreturns_savepath: os.PathLike,
-    data_z_savepath: None | os.PathLike,
-    **kwargs,
+    data_siminnov_savepath: None | os.PathLike,
 ) -> SimulatedReturns:
     """
     Simulate DCC-SGT-GARCH.
     """
     # Obtain the simulated innovations z_t
-    siminnov = _get_sgt_innovations(data_z_savepath=data_z_savepath, **kwargs)
+    siminnov = _get_sgt_innovations(
+        key=key,
+        num_sample=num_sample,
+        data_siminnov_savepath=data_siminnov_savepath,
+        #
+        mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+        mat_p0_tvparams_true=mat_p0_tvparams_true,
+        mat_q0_tvparams_true=mat_q0_tvparams_true,
+        #
+        vec_lbda_init_t0=vec_lbda_init_t0,
+        vec_p0_init_t0=vec_p0_init_t0,
+        vec_q0_init_t0=vec_q0_init_t0,
+        vec_z_init_t0=vec_z_init_t0,
+    )
 
     # Obtain the simulated asset returns
     simreturns = _simulate_returns(
         dim=dim,
         num_sample=num_sample,
+        #
         siminnov=siminnov,
+        #
         dict_params_mean_true=dict_params_mean_true,
         dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
         dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        #
+        mat_Sigma_init_t0=mat_Sigma_init_t0,
+        mat_Q_init_t0=mat_Q_init_t0,
+        #
         data_simreturns_savepath=data_simreturns_savepath,
     )
 
@@ -680,6 +718,8 @@ def _simulate_returns(
     dict_params_mean_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_uvar_vol_true: tp.Dict[str, jpt.Array],
     dict_params_dcc_mvar_cor_true: tp.Dict[str, jpt.Array],
+    mat_Sigma_init_t0: jpt.Float[jpt.Array, "dim dim"],
+    mat_Q_init_t0: jpt.Float[jpt.Array, "dim dim"],
     data_simreturns_savepath: os.PathLike,
 ) -> SimulatedReturns:
     """
@@ -708,6 +748,8 @@ def _simulate_returns(
         simulate_dcc(
             key=key,
             data_z=data_z,
+            mat_Sigma_init_t0=mat_Sigma_init_t0,
+            mat_Q_init_t0=mat_Q_init_t0,
             **dict_params_dcc_uvar_vol_true,
             **dict_params_dcc_mvar_cor_true,
         )
@@ -1098,10 +1140,33 @@ if __name__ == "__main__":
     seed = 1234567
     key = random.key(seed)
     rng = np.random.default_rng(seed)
-    num_sample = int(3e2)
+    num_sample = int(3e3)
     dim = 5
     num_cores = 8
 
+    #################################################################
+    ## Parameters for time-varying SGT
+    #################################################################
+    vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
+    vec_p0_true = rng.uniform(2, 10, dim)
+    vec_q0_true = rng.uniform(2, 10, dim)
+
+    mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
+    mat_p0_tvparams_true = rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))
+    mat_q0_tvparams_true = rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))
+    # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
+    mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
+    mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
+
+    vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
+    vec_z_init_t0 = jnp.repeat(0.0, dim)
+    vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
+    vec_p0_init_t0 = rng.uniform(2, 4, dim)
+    vec_q0_init_t0 = rng.uniform(2, 4, dim)
+
+    #################################################################
+    ## Parameters for DCC-GARCH
+    #################################################################
     # Parameters for the mean returns vector
     dict_params_mean_true = {VEC_MU: rng.uniform(0, 1, dim) / 50}
 
@@ -1123,7 +1188,7 @@ if __name__ == "__main__":
     dict_params_dcc_mvar_cor_true = {
         # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
         VEC_DELTA: np.array([0.007, 0.930]),
-        MAT_QBAR: _generate_random_cov_mat(key=key, dim=dim) / 5,
+        MAT_QBAR: generate_random_cov_mat(key=key, dim=dim) / 5,
     }
 
     dict_params_true = {
@@ -1133,31 +1198,40 @@ if __name__ == "__main__":
         DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_true,
     }
 
-    data_z_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.pkl"
+    key, _ = random.split(key)
+    mat_Sigma_init_t0 = generate_random_cov_mat(key=key, dim=dim)
+    key, _ = random.split(key)
+    mat_Q_init_t0 = generate_random_cov_mat(key=key, dim=dim)
+
+    #################################################################
+    ## Simulate DCC-SGT-GARCH
+    #################################################################
+    # data_siminnov_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.pkl"
+    data_siminnov_savepath = None
     data_simreturns_savepath = pathlib.Path().resolve() / "data_simreturns.pkl"
     simulate_dcc_sgt_garch(
         dim=dim,
         num_sample=num_sample,
+        # SGT parameters
+        mat_lbda_tvparams_true=mat_lbda_tvparams_true,
+        mat_p0_tvparams_true=mat_p0_tvparams_true,
+        mat_q0_tvparams_true=mat_q0_tvparams_true,
+        vec_lbda_init_t0=vec_lbda_init_t0,
+        vec_p0_init_t0=vec_p0_init_t0,
+        vec_q0_init_t0=vec_q0_init_t0,
+        vec_z_init_t0=vec_z_init_t0,
+        # DCC-GARCH parameters
         dict_params_mean_true=dict_params_mean_true,
-        dict_params_z=dict_params_z_true,
         dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
         dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
+        mat_Sigma_init_t0=mat_Sigma_init_t0,
+        mat_Q_init_t0=mat_Q_init_t0,
+        # Saving paths
         data_simreturns_savepath=data_simreturns_savepath,
-        data_z_savepath=data_z_savepath,
+        data_siminnov_savepath=data_siminnov_savepath,
     )
 
     breakpoint()
-
-    data_z, mat_returns = _simulate_returns(
-        seed=seed,
-        dim=dim,
-        num_sample=num_sample,
-        dict_params_mean=dict_params_mean_true,
-        dict_params_z=dict_params_z_true,
-        dict_params_dcc_uvar_vol=dict_params_dcc_uvar_vol_true,
-        dict_params_dcc_mvar_cor=dict_params_dcc_mvar_cor_true,
-        num_cores=num_cores,
-    )
 
     dict_params_mean_init_guess = {"vec_mu": rng.uniform(0, 1, dim) / 50}
     dict_params_z_init_guess = {
@@ -1174,7 +1248,7 @@ if __name__ == "__main__":
     # Params for DCC -- multivariate correlations
     dict_params_dcc_mvar_cor_init_guess = {
         VEC_DELTA: np.array([0.05, 0.530]),
-        MAT_QBAR: _generate_random_cov_mat(key=key, dim=dim) / 10,
+        MAT_QBAR: generate_random_cov_mat(key=key, dim=dim) / 10,
     }
 
     dict_params_init_guess = {
@@ -1186,12 +1260,12 @@ if __name__ == "__main__":
 
     # Initial {\sigma_{i,0}}
     key, _ = random.split(key)
-    mat_Sigma_0 = _generate_random_cov_mat(key=key, dim=dim)
+    mat_Sigma_0 = generate_random_cov_mat(key=key, dim=dim)
     vec_sigma_0 = jnp.sqrt(jnp.diag(mat_Sigma_0))
 
     # Initial Q_0
     key, _ = random.split(key)
-    mat_Q_0 = _generate_random_cov_mat(key=key, dim=dim)
+    mat_Q_0 = generate_random_cov_mat(key=key, dim=dim)
 
     method = "BFGS"
     options = {"maxiter": 1000, "gtol": 1e-4}

@@ -1,4 +1,5 @@
 import jax
+from jax._src.random import KeyArrayLike
 import jax.numpy as jnp
 import jax.scipy as jscipy
 import jax.scipy.optimize
@@ -452,7 +453,7 @@ def _time_varying_pq_params(
 
 
 def sample_mvar_timevarying_sgt(
-    key,
+    key: KeyArrayLike,
     num_sample: int,
     mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"],
     mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"],
@@ -460,6 +461,7 @@ def sample_mvar_timevarying_sgt(
     vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],
     vec_p0_init_t0: jpt.Float[jpt.Array, "dim"],
     vec_q0_init_t0: jpt.Float[jpt.Array, "dim"],
+    vec_z_init_t0: jpt.Float[jpt.Array, "dim"],
     save_path: None | os.PathLike,
 ) -> SimulatedInnovations:
     """
