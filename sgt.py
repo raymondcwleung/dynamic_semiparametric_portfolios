@@ -62,6 +62,25 @@ class ParamsZSGT:
     mat_p0_tvparams: jpt.Float[jpt.Array, "NUM_P0_TVPARAMS dim"]
     mat_q0_tvparams: jpt.Float[jpt.Array, "NUM_Q0_TVPARAMS dim"]
 
+    def __post_init__(self):
+        # Constraints on the data generating process of \lambda_t
+        if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
+            raise ValueError(
+                "The first parameter of lbda_tvparams must be strictly positive"
+            )
+
+        # Constraints on the data generating process of p_t
+        if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
+            raise ValueError(
+                "The first parameter of p0_tvparams must be strictly positive"
+            )
+
+        # Constraints on the data generating process of q_t
+        if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
+            raise ValueError(
+                "The first parameter of q0_tvparams must be strictly positive"
+            )
+
 
 @dataclass
 class InitTimeConditionZSGT:
@@ -78,7 +97,7 @@ class InitTimeConditionZSGT:
 
     def __post_init__(self):
         # Parameter constraint checks on \lambda_0
-        if jnp.any(self.vec_lbda_init_t0 <= -1) or jnp.any(self.vec_lbda_init_t0 >= -1):
+        if jnp.any(self.vec_lbda_init_t0 <= -1) or jnp.any(self.vec_lbda_init_t0 >= 1):
             raise ValueError(
                 "For all t, the process \\lambda_t (notably at t = 0) must be in (-1, 1)."
             )
@@ -126,42 +145,6 @@ class SimulatedInnovations:
 
     # Innovations z_t
     data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
-
-
-# @dataclass
-# class SimulatedInnovations:
-#     """
-#     Data class for keeping track of the parameters and data
-#     of the innovation SGT z_t
-#     """
-#
-#     # Number of time samples
-#     num_sample: int
-#
-#     ################################################################
-#     ## Parameters
-#     ################################################################
-#     mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"]
-#     mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"]
-#     mat_q0_tvparams_true: jpt.Float[jpt.Array, "num_q0_tvparams dim"]
-#
-#     ################################################################
-#     ## Initial conditions
-#     ################################################################
-#     vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"]
-#     vec_p0_init_t0: jpt.Float[jpt.Array, "dim"]
-#     vec_q0_init_t0: jpt.Float[jpt.Array, "dim"]
-#
-#     ################################################################
-#     ## Simulated data
-#     ################################################################
-#     # Time-varying parameters related to z_t
-#     data_mat_lbda: jpt.Float[jpt.Array, "num_sample dim"]
-#     data_mat_p0: jpt.Float[jpt.Array, "num_sample dim"]
-#     data_mat_q0: jpt.Float[jpt.Array, "num_sample dim"]
-#
-#     # Innovations z_t
-#     data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
 
 
 def positive_part(x: jpt.Array) -> jpt.Array:
@@ -633,7 +616,7 @@ if __name__ == "__main__":
         key = random.key(seed)
         rng = np.random.default_rng(seed)
         num_sample = int(3e2)
-        dim = 5
+        dim = 1
         num_cores = 8
 
         # Set the true parameters of the SGT z_t process
