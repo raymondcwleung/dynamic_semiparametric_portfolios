@@ -12,7 +12,7 @@ import pathlib
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    filename="simulate_dcc_sgt_garch.log",
+    filename="logs/simulate_dcc_sgt_garch.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
     level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
@@ -20,13 +20,14 @@ logging.basicConfig(
 )
 
 import dcc
+import sgt
 
 jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 
 seed = 1234567
 key = random.key(seed)
 rng = np.random.default_rng(seed)
-num_sample = int(3e3)
+num_sample = int(1e2)
 dim = 5
 num_cores = 8
 
@@ -50,32 +51,56 @@ vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
 vec_p0_init_t0 = rng.uniform(2, 4, dim)
 vec_q0_init_t0 = rng.uniform(2, 4, dim)
 
+params_z_sgt_true = sgt.ParamsZSGT(
+    mat_lbda_tvparams=mat_lbda_tvparams_true,
+    mat_p0_tvparams=mat_p0_tvparams_true,
+    mat_q0_tvparams=mat_q0_tvparams_true,
+)
+
 #################################################################
 ## Parameters for DCC-GARCH
 #################################################################
 # Parameters for the mean returns vector
-dict_params_mean_true = {dcc.VEC_MU: rng.uniform(0, 1, dim) / 50}
-
-# Params for z \sim SGT
-dict_params_z_true = {
-    dcc.VEC_LBDA: rng.uniform(-0.25, 0.25, dim),
-    dcc.VEC_P0: rng.uniform(2, 4, dim),
-    dcc.VEC_Q0: rng.uniform(2, 4, dim),
-}
+params_mean_true = dcc.ParamsMean(vec_mu=rng.uniform(0, 1, dim) / 50)
+# dict_params_mean_true = {dcc.VEC_MU: rng.uniform(0, 1, dim) / 50}
 
 # Params for DCC -- univariate vols
-dict_params_dcc_uvar_vol_true = {
-    dcc.VEC_OMEGA: rng.uniform(0, 1, dim) / 2,
-    dcc.VEC_BETA: rng.uniform(0, 1, dim) / 3,
-    dcc.VEC_ALPHA: rng.uniform(0, 1, dim) / 10,
-    dcc.VEC_PSI: rng.uniform(0, 1, dim) / 5,
-}
+# dict_params_dcc_uvar_vol_true = {
+#     dcc.VEC_OMEGA: rng.uniform(0, 1, dim) / 2,
+#     dcc.VEC_BETA: rng.uniform(0, 1, dim) / 3,
+#     dcc.VEC_ALPHA: rng.uniform(0, 1, dim) / 10,
+#     dcc.VEC_PSI: rng.uniform(0, 1, dim) / 5,
+# }
+
+# Params for DCC -- univariate vols
+params_uvar_vol_true = dcc.ParamsUVarVol(
+    vec_omega=rng.uniform(0, 1, dim) / 2,
+    vec_beta=rng.uniform(0, 1, dim) / 3,
+    vec_alpha=rng.uniform(0, 1, dim) / 10,
+    vec_psi=rng.uniform(0, 1, dim) / 5,
+)
+
+
 # Params for DCC -- multivariate correlations
-dict_params_dcc_mvar_cor_true = {
-    # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
-    dcc.VEC_DELTA: np.array([0.007, 0.930]),
-    dcc.MAT_QBAR: dcc.generate_random_cov_mat(key=key, dim=dim) / 5,
-}
+# dict_params_dcc_mvar_cor_true = {
+#     # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
+#     dcc.VEC_DELTA: np.array([0.007, 0.930]),
+#     dcc.MAT_QBAR: dcc.generate_random_cov_mat(key=key, dim=dim) / 5,
+# }
+
+
+# Params for DCC -- multivariate correlations
+params_mvar_cor_true = dcc.ParamsMVarCor(
+    vec_delta=np.array([0.007, 0.930]),
+    mat_Qbar=dcc.generate_random_cov_mat(key=key, dim=dim) / 5,
+)
+
+params_dcc_true = dcc.ParamsDCC(
+    mean=params_mean_true, uvar_vol=params_uvar_vol_true, mvar_cor=params_mvar_cor_true
+)
+
+breakpoint()
+
 
 dict_params_true = {
     dcc.DICT_PARAMS_MEAN: dict_params_mean_true,

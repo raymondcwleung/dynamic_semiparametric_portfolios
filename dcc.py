@@ -8,10 +8,7 @@ import jax.scipy.optimize
 from jax import grad, jit, vmap
 from jax import random
 import jax.test_util
-from jax import Array
-from jax.typing import ArrayLike, DTypeLike
 import jaxtyping as jpt
-import numpy.typing as npt
 
 import logging
 import os
@@ -22,7 +19,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    filename="dcc.log",
+    filename="logs/dcc.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
     level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
@@ -53,6 +50,81 @@ from sgt import SimulatedInnovations
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
 jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 # jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+
+
+@dataclass
+class ParamsMean:
+    """
+    Parameters for the mean returns in a DCC-GARCH model
+    """
+
+    vec_mu: jpt.Float[jpt.Array, "dim"]
+
+
+@dataclass
+class ParamsUVarVol:
+    """
+    Parameters for the univariate volatilities in a DCC-GARCH model
+    """
+
+    vec_omega: jpt.Float[jpt.Array, "dim"]
+    vec_beta: jpt.Float[jpt.Array, "dim"]
+    vec_alpha: jpt.Float[jpt.Array, "dim"]
+    vec_psi: jpt.Float[jpt.Array, "dim"]
+
+    def __post_init__(self):
+        # All \omega, \beta, \alpha, \psi quantities must be
+        # strictly positive
+        if jnp.any(self.vec_omega < 0):
+            raise ValueError("Must have positive-valued \\omega entries")
+
+        if jnp.any(self.vec_beta < 0):
+            raise ValueError("Must have positive-valued \\beta entries")
+
+        if jnp.any(self.vec_alpha < 0):
+            raise ValueError("Must have positive-valued \\alpha entries")
+
+        if jnp.any(self.vec_psi < 0):
+            raise ValueError("Must have positive-valued \\psi entries")
+
+
+@dataclass
+class ParamsMVarCor:
+    """
+    Parameters for the multivariate Q_t process in a DCC-GARCH model
+    """
+
+    vec_delta: jpt.Float[jpt.Array, "2"]
+    mat_Qbar: jpt.Float[jpt.Array, "dim dim"]
+
+    def __post_init__(self):
+        # Check constraints on \delta
+        if jnp.size(self.vec_delta) != 2:
+            raise ValueError("\\delta must have exactly two elements")
+
+        if jnp.any(self.vec_delta < 0) or jnp.any(self.vec_delta > 1):
+            raise ValueError("All \\delta parameter entries must be in (0,1)")
+
+        if jnp.sum(self.vec_delta) > 1:
+            raise ValueError(
+                "Sum of \\delta[0] + \\delta[1] must be strictly less than 1"
+            )
+
+        # Check constraints on \bar{Q}
+        eigvals, _ = jnp.linalg.eigh(self.mat_Qbar)
+        if jnp.any(eigvals < 0):
+            raise ValueError("\\bar{Q} must be PSD")
+
+
+@dataclass
+class ParamsDCC:
+    """
+    Collect all the parameters of a DCC-GARCH model.
+    """
+
+    mean: ParamsMean
+    uvar_vol: ParamsUVarVol
+    mvar_cor: ParamsMVarCor
 
 
 logger = logging.getLogger(__name__)
@@ -195,7 +267,7 @@ def _calc_unexpected_excess_rtn(
 @jax.jit
 def _calc_normalized_unexpected_excess_rtn(
     vec_sigma: jpt.Float[jpt.Array, "dim"], vec_epsilon: jpt.Float[jpt.Array, "dim"]
-) -> Array:
+) -> jpt.Float[jpt.Array, "dim"]:
     """
     Return u_t = D_t^{-1} \\epsilon_t
     """
@@ -693,6 +765,7 @@ def simulate_dcc_sgt_garch(
 
     # Obtain the simulated asset returns
     simreturns = _simulate_returns(
+        key=key,
         dim=dim,
         num_sample=num_sample,
         #
@@ -712,6 +785,7 @@ def simulate_dcc_sgt_garch(
 
 
 def _simulate_returns(
+    key: KeyArrayLike,
     dim: int,
     num_sample: int,
     siminnov: sgt.SimulatedInnovations,
@@ -845,6 +919,14 @@ def _make_dict_params_z(x, dim) -> tp.Dict[str, NDArray]:
     }
 
     return dict_params_z
+
+
+def _make_dict_params_timevarying_sgt(x, dim) -> tp.Dict[str, jpt.Array]:
+    """
+    Take a vector x and split them into parameters related to the
+    time-varying SGT process
+    """
+    pass
 
 
 def _make_dict_params_mean(x, dim) -> tp.Dict[str, NDArray]:
@@ -992,10 +1074,10 @@ def _make_params_array_from_dict_params(
     return x0
 
 
-def dcc_garch_optimization(
-    mat_returns: Array,
-    dict_params_init_guess: tp.Dict[str, Array] | tp.Dict[str, NDArray],
-    dict_init_t0_conditions: tp.Dict[str, Array] | tp.Dict[str, NDArray],
+def dcc_sgt_garch_optimization(
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    dict_params_init_guess,
+    dict_init_t0_conditions,
     verbose: bool = False,
     grand_maxiter: int = 5,
     maxiter: int = 100,
@@ -1006,9 +1088,9 @@ def dcc_garch_optimization(
     solver_dcc_mvar_cor=jaxopt.LBFGS,
 ):
     """
-    Run DCC-GARCH optimization
+    Run DCC-SGT-GARCH optimization
     """
-    logger.info(f"Begin DCC-GARCH optimization.")
+    logger.info(f"Begin DCC-SGT-GARCH optimization.")
 
     #################################################################
     ## Setup partial objective functions
@@ -1144,95 +1226,6 @@ if __name__ == "__main__":
     dim = 5
     num_cores = 8
 
-    #################################################################
-    ## Parameters for time-varying SGT
-    #################################################################
-    vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
-    vec_p0_true = rng.uniform(2, 10, dim)
-    vec_q0_true = rng.uniform(2, 10, dim)
-
-    mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
-    mat_p0_tvparams_true = rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))
-    mat_q0_tvparams_true = rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))
-    # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
-    mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
-    mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
-
-    vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
-    vec_z_init_t0 = jnp.repeat(0.0, dim)
-    vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
-    vec_p0_init_t0 = rng.uniform(2, 4, dim)
-    vec_q0_init_t0 = rng.uniform(2, 4, dim)
-
-    #################################################################
-    ## Parameters for DCC-GARCH
-    #################################################################
-    # Parameters for the mean returns vector
-    dict_params_mean_true = {VEC_MU: rng.uniform(0, 1, dim) / 50}
-
-    # Params for z \sim SGT
-    dict_params_z_true = {
-        VEC_LBDA: rng.uniform(-0.25, 0.25, dim),
-        VEC_P0: rng.uniform(2, 4, dim),
-        VEC_Q0: rng.uniform(2, 4, dim),
-    }
-
-    # Params for DCC -- univariate vols
-    dict_params_dcc_uvar_vol_true = {
-        VEC_OMEGA: rng.uniform(0, 1, dim) / 2,
-        VEC_BETA: rng.uniform(0, 1, dim) / 3,
-        VEC_ALPHA: rng.uniform(0, 1, dim) / 10,
-        VEC_PSI: rng.uniform(0, 1, dim) / 5,
-    }
-    # Params for DCC -- multivariate correlations
-    dict_params_dcc_mvar_cor_true = {
-        # Ensure \delta_1, \delta_2 \in [0,1] and \delta_1 + \delta_2 \le 1
-        VEC_DELTA: np.array([0.007, 0.930]),
-        MAT_QBAR: generate_random_cov_mat(key=key, dim=dim) / 5,
-    }
-
-    dict_params_true = {
-        DICT_PARAMS_MEAN: dict_params_mean_true,
-        DICT_PARAMS_Z: dict_params_z_true,
-        DICT_PARAMS_DCC_UVAR_VOL: dict_params_dcc_uvar_vol_true,
-        DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_true,
-    }
-
-    key, _ = random.split(key)
-    mat_Sigma_init_t0 = generate_random_cov_mat(key=key, dim=dim)
-    key, _ = random.split(key)
-    mat_Q_init_t0 = generate_random_cov_mat(key=key, dim=dim)
-
-    #################################################################
-    ## Simulate DCC-SGT-GARCH
-    #################################################################
-    # data_siminnov_savepath = pathlib.Path().resolve() / "data_timevarying_sgt.pkl"
-    data_siminnov_savepath = None
-    data_simreturns_savepath = pathlib.Path().resolve() / "data_simreturns.pkl"
-    simulate_dcc_sgt_garch(
-        dim=dim,
-        num_sample=num_sample,
-        # SGT parameters
-        mat_lbda_tvparams_true=mat_lbda_tvparams_true,
-        mat_p0_tvparams_true=mat_p0_tvparams_true,
-        mat_q0_tvparams_true=mat_q0_tvparams_true,
-        vec_lbda_init_t0=vec_lbda_init_t0,
-        vec_p0_init_t0=vec_p0_init_t0,
-        vec_q0_init_t0=vec_q0_init_t0,
-        vec_z_init_t0=vec_z_init_t0,
-        # DCC-GARCH parameters
-        dict_params_mean_true=dict_params_mean_true,
-        dict_params_dcc_uvar_vol_true=dict_params_dcc_uvar_vol_true,
-        dict_params_dcc_mvar_cor_true=dict_params_dcc_mvar_cor_true,
-        mat_Sigma_init_t0=mat_Sigma_init_t0,
-        mat_Q_init_t0=mat_Q_init_t0,
-        # Saving paths
-        data_simreturns_savepath=data_simreturns_savepath,
-        data_siminnov_savepath=data_siminnov_savepath,
-    )
-
-    breakpoint()
-
     dict_params_mean_init_guess = {"vec_mu": rng.uniform(0, 1, dim) / 50}
     dict_params_z_init_guess = {
         VEC_LBDA: rng.uniform(-0.25, 0.25, dim),
@@ -1272,7 +1265,13 @@ if __name__ == "__main__":
 
     dict_init_t0_conditions = {VEC_SIGMA_0: vec_sigma_0, MAT_Q_0: mat_Q_0}
 
-    neg_loglik_optval, dict_params = dcc_garch_optimization(
+    # Load in the simulated asset returns
+    with open("./simulated_data/data_simreturns.pkl", "rb") as f:
+        simreturns = pickle.load(f)
+
+    mat_returns = simreturns.data_mat_returns
+
+    neg_loglik_optval, dict_params = dcc_sgt_garch_optimization(
         mat_returns=mat_returns,
         dict_params_init_guess=dict_params_init_guess,
         dict_init_t0_conditions=dict_init_t0_conditions,
