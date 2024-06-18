@@ -10,6 +10,8 @@ import jax.test_util
 import typing as tp
 import jaxtyping as jpt
 
+import numpy.typing as npt
+
 
 import os
 import logging
@@ -62,6 +64,39 @@ class ParamsZSGT:
 
 
 @dataclass
+class InitTimeConditionZSGT:
+    """
+    Initial conditions related to the innovation process z_t.
+    NOTE: This is primarily only used for simulating data and
+    not on real data.
+    """
+
+    vec_z_init_t0: jpt.Float[jpt.Array, "dim"]
+    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"]
+    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"]
+    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"]
+
+    def __post_init__(self):
+        # Parameter constraint checks on \lambda_0
+        if jnp.any(self.vec_lbda_init_t0 <= -1) or jnp.any(self.vec_lbda_init_t0 >= -1):
+            raise ValueError(
+                "For all t, the process \\lambda_t (notably at t = 0) must be in (-1, 1)."
+            )
+
+        # Parameter constraint checks on q
+        if jnp.any(self.vec_p0_init_t0 <= 0):
+            raise ValueError(
+                "For all t, the process p_t (notably at t = 0) must be > 0."
+            )
+
+        # Parameter constraint checks on q
+        if jnp.any(self.vec_q0_init_t0 <= 0):
+            raise ValueError(
+                "For all t, the process q_t (notably at t = 0) must be > 0."
+            )
+
+
+@dataclass
 class SimulatedInnovations:
     """
     Data class for keeping track of the parameters and data
@@ -75,16 +110,11 @@ class SimulatedInnovations:
     ## Parameters
     ################################################################
     params_z_sgt: ParamsZSGT
-    # mat_lbda_tvparams_true: jpt.Float[jpt.Array, "num_lbda_tvparams dim"]
-    # mat_p0_tvparams_true: jpt.Float[jpt.Array, "num_p0_tvparams dim"]
-    # mat_q0_tvparams_true: jpt.Float[jpt.Array, "num_q0_tvparams dim"]
 
     ################################################################
-    ## Initial conditions
+    ## Initial t = 0 conditions for the time-varying parameters
     ################################################################
-    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"]
-    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"]
-    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"]
+    inittimecond_z_sgt: InitTimeConditionZSGT
 
     ################################################################
     ## Simulated data
@@ -237,8 +267,8 @@ def quantile_sgt(
     lbda: jpt.Float[jpt.Array, "?dim"],
     p0: jpt.Float[jpt.Array, "?dim"],
     q0: jpt.Float[jpt.Array, "?dim"],
-    mu: float = 0.0,
-    sigma: float = 1.0,
+    mu: jpt.Float = 0.0,
+    sigma: jpt.Float = 1.0,
     mean_cent: bool = True,
     var_adj: bool = True,
     use_jax: bool = True,
@@ -456,7 +486,7 @@ def mle_mvar_sgt(
 
 
 def _time_varying_lbda_params(
-    theta: jpt.Float[jpt.Array, "num_lbda_tvparams"],
+    theta: jpt.Float[jpt.Array, "NUM_LBDA_TVPARAMS"],
     lbda_t_minus_1: jpt.Float[jpt.Array, "#dim"],
     z_t_minus_1: jpt.Float[jpt.Array, "#dim"],
 ) -> jpt.Array:
@@ -504,10 +534,7 @@ def sample_mvar_timevarying_sgt(
     key: KeyArrayLike,
     num_sample: int,
     params_z_sgt_true: ParamsZSGT,
-    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],
-    vec_p0_init_t0: jpt.Float[jpt.Array, "dim"],
-    vec_q0_init_t0: jpt.Float[jpt.Array, "dim"],
-    vec_z_init_t0: jpt.Float[jpt.Array, "dim"],
+    inittimecond_z_sgt: InitTimeConditionZSGT,
     save_path: None | os.PathLike,
 ) -> SimulatedInnovations:
     """
@@ -527,10 +554,10 @@ def sample_mvar_timevarying_sgt(
     mat_q0 = jnp.empty(shape=(num_sample, dim))
     mat_z = jnp.empty(shape=(num_sample, dim))
 
-    mat_lbda = mat_lbda.at[0].set(vec_lbda_init_t0)
-    mat_p0 = mat_p0.at[0].set(vec_p0_init_t0)
-    mat_q0 = mat_p0.at[0].set(vec_q0_init_t0)
-    mat_z = mat_z.at[0].set(vec_z_init_t0)
+    mat_lbda = mat_lbda.at[0].set(inittimecond_z_sgt.vec_lbda_init_t0)
+    mat_p0 = mat_p0.at[0].set(inittimecond_z_sgt.vec_p0_init_t0)
+    mat_q0 = mat_p0.at[0].set(inittimecond_z_sgt.vec_q0_init_t0)
+    mat_z = mat_z.at[0].set(inittimecond_z_sgt.vec_z_init_t0)
 
     # Setup vmap functions
     _func_lbda = vmap(_time_varying_lbda_params, in_axes=[1, 0, 0])
@@ -584,12 +611,7 @@ def sample_mvar_timevarying_sgt(
     siminnov = SimulatedInnovations(
         num_sample=num_sample,
         params_z_sgt=params_z_sgt_true,
-        # mat_lbda_tvparams_true=mat_lbda_tvparams_true,
-        # mat_p0_tvparams_true=mat_p0_tvparams_true,
-        # mat_q0_tvparams_true=mat_q0_tvparams_true,
-        vec_lbda_init_t0=vec_lbda_init_t0,
-        vec_p0_init_t0=vec_p0_init_t0,
-        vec_q0_init_t0=vec_q0_init_t0,
+        inittimecond_z_sgt=inittimecond_z_sgt,
         data_mat_lbda=data_mat_lbda,
         data_mat_p0=data_mat_p0,
         data_mat_q0=data_mat_q0,
@@ -613,43 +635,31 @@ if __name__ == "__main__":
         num_sample = int(3e2)
         dim = 5
         num_cores = 8
-        save_path = Path().resolve() / "data_timevarying_sgt.pkl"
 
-        vec_lbda_true = rng.uniform(-0.25, 0.25, dim)
-        vec_p0_true = rng.uniform(2, 10, dim)
-        vec_q0_true = rng.uniform(2, 10, dim)
-
-        mat_lbda_tvparams_true = rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
-        mat_p0_tvparams_true = rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))
-        mat_q0_tvparams_true = rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))
-        # mat_lbda_tvparams_true[0, :] = np.abs(mat_lbda_tvparams_true[0, :])
-        mat_p0_tvparams_true[0, :] = np.abs(mat_p0_tvparams_true[0, :])
-        mat_q0_tvparams_true[0, :] = np.abs(mat_q0_tvparams_true[0, :])
-
-        vec_z_init_t0 = 2 * jax.random.uniform(key, shape=(dim,)) - 1
-        vec_z_init_t0 = jnp.repeat(0.0, dim)
-        vec_lbda_init_t0 = rng.uniform(-0.25, 0.25, dim)
-        vec_p0_init_t0 = rng.uniform(2, 4, dim)
-        vec_q0_init_t0 = rng.uniform(2, 4, dim)
-
+        # Set the true parameters of the SGT z_t process
         params_z_sgt_true = ParamsZSGT(
-            mat_lbda_tvparams=mat_lbda_tvparams_true,
-            mat_p0_tvparams=mat_p0_tvparams_true,
-            mat_q0_tvparams=mat_q0_tvparams_true,
+            mat_lbda_tvparams=jnp.array(
+                rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
+            ),
+            mat_p0_tvparams=jnp.array(rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))),
+            mat_q0_tvparams=jnp.array(rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))),
         )
 
+        # Set the initial t = 0 conditions for the various processes
+        # in constructing time-varying parameters
+        inittimecond_z_sgt = InitTimeConditionZSGT(
+            vec_z_init_t0=jnp.repeat(0.0, dim),
+            vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
+            vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
+            vec_q0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
+        )
+
+        # Simulate
+        save_path = Path().resolve() / "data_timevarying_sgt.pkl"
         siminnov = sample_mvar_timevarying_sgt(
             key=key,
             num_sample=num_sample,
             params_z_sgt_true=params_z_sgt_true,
-            vec_lbda_init_t0=vec_lbda_init_t0,
-            vec_p0_init_t0=vec_p0_init_t0,
-            vec_q0_init_t0=vec_q0_init_t0,
-            vec_z_init_t0=vec_z_init_t0,
+            inittimecond_z_sgt=inittimecond_z_sgt,
             save_path=save_path,
         )
-
-    # # Load simulations
-    # save_path = Path().resolve() / "data_timevarying_sgt.npz"
-    # with open(save_path, "rb") as f:
-    #     npzfile = jnp.load(f)

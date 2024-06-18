@@ -44,7 +44,7 @@ import scipy
 import matplotlib.pyplot as plt
 
 import sgt
-from sgt import SimulatedInnovations
+from sgt import ParamsZSGT, SimulatedInnovations
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
@@ -1250,6 +1250,26 @@ if __name__ == "__main__":
         DICT_PARAMS_DCC_UVAR_VOL: dict_params_dcc_uvar_vol_init_guess,
         DICT_PARAMS_DCC_MVAR_COR: dict_params_dcc_mvar_cor_init_guess,
     }
+
+    params_mean_init_guess = ParamsMean(vec_mu=rng.uniform(0, 1, dim) / 50)
+
+    params_z_sgt_init_guess = ParamsZSGT(
+        mat_lbda_tvparams=rng.uniform(-0.25, 0.25, (sgt.NUM_LBDA_TVPARAMS, dim)),
+        mat_p0_tvparams=rng.uniform(-1, 1, (sgt.NUM_P0_TVPARAMS, dim)),
+        mat_q0_tvparams=rng.uniform(-1, 1, (sgt.NUM_Q0_TVPARAMS, dim)),
+    )
+
+    params_uvar_vol_init_guess = ParamsUVarVol(
+        vec_omega=rng.uniform(0, 1, dim) / 2,
+        vec_beta=rng.uniform(0, 1, dim) / 3,
+        vec_alpha=rng.uniform(0, 1, dim) / 10,
+        vec_psi=rng.uniform(0, 1, dim) / 5,
+    )
+
+    params_mvar_cor_init_guess = ParamsMVarCor(
+        vec_delta=np.array([0.05, 0.530]),
+        mat_Qbar=generate_random_cov_mat(key=key, dim=dim) / 10,
+    )
 
     # Initial {\sigma_{i,0}}
     key, _ = random.split(key)
