@@ -10,6 +10,9 @@ import jax.test_util
 import typing as tp
 import jaxtyping as jpt
 
+import chex
+from matplotlib._api import suppress_matplotlib_deprecation_warning
+
 import numpy.typing as npt
 
 
@@ -52,8 +55,18 @@ NUM_P0_TVPARAMS = 3
 NUM_Q0_TVPARAMS = 3
 
 
-@dataclass
-class ParamsZSGT:
+@chex.dataclass
+class ParamsZ:
+    """
+    Generic placeholder for the parent class of parameters for an
+    innovations process z_t
+    """
+
+    pass
+
+
+@chex.dataclass
+class ParamsZSgt(ParamsZ):
     """
     Time-varying parameters of innovations process z_t
     """
@@ -62,28 +75,32 @@ class ParamsZSGT:
     mat_p0_tvparams: jpt.Float[jpt.Array, "NUM_P0_TVPARAMS dim"]
     mat_q0_tvparams: jpt.Float[jpt.Array, "NUM_Q0_TVPARAMS dim"]
 
-    def __post_init__(self):
-        # Constraints on the data generating process of \lambda_t
-        if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
-            raise ValueError(
-                "The first parameter of lbda_tvparams must be strictly positive"
-            )
+    # num_lbda_tvparams: int = NUM_LBDA_TVPARAMS
+    # num_p0_tvparams: int = NUM_P0_TVPARAMS
+    # num_q0_tvparams: int = NUM_Q0_TVPARAMS
 
-        # Constraints on the data generating process of p_t
-        if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
-            raise ValueError(
-                "The first parameter of p0_tvparams must be strictly positive"
-            )
+    # def __post_init__(self):
+    #     # Constraints on the data generating process of \lambda_t
+    #     if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
+    #         raise ValueError(
+    #             "The first parameter of lbda_tvparams must be strictly positive"
+    #         )
+    #
+    #     # Constraints on the data generating process of p_t
+    #     if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
+    #         raise ValueError(
+    #             "The first parameter of p0_tvparams must be strictly positive"
+    #         )
+    #
+    #     # Constraints on the data generating process of q_t
+    #     if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
+    #         raise ValueError(
+    #             "The first parameter of q0_tvparams must be strictly positive"
+    #         )
 
-        # Constraints on the data generating process of q_t
-        if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
-            raise ValueError(
-                "The first parameter of q0_tvparams must be strictly positive"
-            )
 
-
-@dataclass
-class InitTimeConditionZSGT:
+@chex.dataclass
+class InitTimeConditionZSgt:
     """
     Initial conditions related to the innovation process z_t.
     NOTE: This is primarily only used for simulating data and
@@ -115,7 +132,7 @@ class InitTimeConditionZSGT:
             )
 
 
-@dataclass
+@chex.dataclass
 class SimulatedInnovations:
     """
     Data class for keeping track of the parameters and data
@@ -128,12 +145,12 @@ class SimulatedInnovations:
     ################################################################
     ## Parameters
     ################################################################
-    params_z_sgt: ParamsZSGT
+    params_z_sgt: ParamsZSgt
 
     ################################################################
     ## Initial t = 0 conditions for the time-varying parameters
     ################################################################
-    inittimecond_z_sgt: InitTimeConditionZSGT
+    inittimecond_z_sgt: InitTimeConditionZSgt
 
     ################################################################
     ## Simulated data
@@ -208,10 +225,10 @@ def pdf_sgt(z, lbda, p0, q0, mu=0.0, sigma=1.0, mean_cent=True, var_adj=True):
 
 
 def pdf_mvar_indp_sgt(
-    x: jpt.ArrayLike,
-    vec_lbda: jpt.ArrayLike,
-    vec_p0: jpt.ArrayLike,
-    vec_q0: jpt.ArrayLike,
+    x: jpt.Float[jpt.Array, "dim"],
+    vec_lbda: jpt.Float[jpt.Array, "dim"],
+    vec_p0: jpt.Float[jpt.Array, "dim"],
+    vec_q0: jpt.Float[jpt.Array, "dim"],
 ):
     """
     Let X_1 \\sim SGT(\\theta_1), \\ldots, X_d \\sim SGT(\\theta_d) be
@@ -245,6 +262,38 @@ def loglik_mvar_indp_sgt(
     return loglik
 
 
+def loglik_mvar_timevarying_sgt(
+    data: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_lbda: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_p0: jpt.Float[jpt.Array, "num_sample dim"],
+    mat_q0: jpt.Float[jpt.Array, "num_sample dim"],
+    neg_loglik: bool,
+) -> jpt.Float:
+    """
+    (Negative) of the log-likelihood function of a vector of
+    independent SGT random variables.
+    """
+    num_sample = data.shape[0]
+    _func = vmap(pdf_mvar_indp_sgt, in_axes=[0, 0, 0, 0])
+
+    summands = _func(data, mat_lbda, mat_p0, mat_q0)
+    summands = jnp.prod(summands, axis=1)
+
+    # Ensure the individual pdf values in the likelihood
+    # function are correctly sized
+    if jnp.size(summands) != num_sample:
+        raise ValueError(
+            "Individual multiplicands in the likelihood function are not correctly sized."
+        )
+
+    loglik_summands = jnp.log(summands)
+    loglik = loglik_summands.sum()
+
+    if neg_loglik:
+        loglik = -1.0 * loglik
+    return loglik
+
+
 def quantile_sgt(
     prob: jpt.Float[jpt.Array, "?num_sample"],
     lbda: jpt.Float[jpt.Array, "?dim"],
@@ -255,7 +304,7 @@ def quantile_sgt(
     mean_cent: bool = True,
     var_adj: bool = True,
     use_jax: bool = True,
-):
+) -> jpt.Float:
     """
     Univariate SGT quantile
     """
@@ -516,8 +565,8 @@ def _time_varying_pq_params(
 def sample_mvar_timevarying_sgt(
     key: KeyArrayLike,
     num_sample: int,
-    params_z_sgt_true: ParamsZSGT,
-    inittimecond_z_sgt: InitTimeConditionZSGT,
+    params_z_sgt_true: ParamsZSgt,
+    inittimecond_z_sgt: InitTimeConditionZSgt,
     save_path: None | os.PathLike,
 ) -> SimulatedInnovations:
     """
@@ -620,7 +669,7 @@ if __name__ == "__main__":
         num_cores = 8
 
         # Set the true parameters of the SGT z_t process
-        params_z_sgt_true = ParamsZSGT(
+        params_z_sgt_true = ParamsZSgt(
             mat_lbda_tvparams=jnp.array(
                 rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
             ),
@@ -630,7 +679,7 @@ if __name__ == "__main__":
 
         # Set the initial t = 0 conditions for the various processes
         # in constructing time-varying parameters
-        inittimecond_z_sgt = InitTimeConditionZSGT(
+        inittimecond_z_sgt = InitTimeConditionZSgt(
             vec_z_init_t0=jnp.repeat(0.0, dim),
             vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
             vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),

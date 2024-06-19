@@ -43,7 +43,7 @@ mat_p0_tvparams = rng.uniform(-0.25, 0.25, (sgt.NUM_P0_TVPARAMS, dim))
 mat_p0_tvparams[0, :] = np.abs(mat_p0_tvparams[0, :])
 mat_q0_tvparams = rng.uniform(-0.25, 0.25, (sgt.NUM_Q0_TVPARAMS, dim))
 mat_q0_tvparams[0, :] = np.abs(mat_q0_tvparams[0, :])
-params_z_sgt_true = sgt.ParamsZSGT(
+params_z_sgt_true = sgt.ParamsZSgt(
     mat_lbda_tvparams=jnp.array(mat_lbda_tvparams),
     mat_p0_tvparams=jnp.array(mat_p0_tvparams),
     mat_q0_tvparams=jnp.array(mat_q0_tvparams),
@@ -51,7 +51,7 @@ params_z_sgt_true = sgt.ParamsZSGT(
 
 # Set the initial t = 0 conditions for the various processes
 # in constructing time-varying parameters
-inittimecond_z_sgt = sgt.InitTimeConditionZSGT(
+inittimecond_z_sgt = sgt.InitTimeConditionZSgt(
     vec_z_init_t0=jnp.repeat(0.0, dim),
     vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
     vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
@@ -78,7 +78,7 @@ params_mvar_cor_true = dcc.ParamsMVarCor(
 )
 
 # Package all the DCC params together
-params_dcc_true = dcc.ParamsDCC(
+params_dcc_true = dcc.ParamsDcc(
     mean=params_mean_true, uvar_vol=params_uvar_vol_true, mvar_cor=params_mvar_cor_true
 )
 
@@ -87,7 +87,7 @@ params_dcc_true = dcc.ParamsDCC(
 subkeys = random.split(key, 2)
 mat_Sigma_init_t0 = dcc.generate_random_cov_mat(key=subkeys[0], dim=dim)
 mat_Q_init_t0 = dcc.generate_random_cov_mat(key=subkeys[1], dim=dim)
-inittimecond_dcc = dcc.InitTimeConditionDCC(
+inittimecond_dcc = dcc.InitTimeConditionDcc(
     mat_Sigma_init_t0=mat_Sigma_init_t0, mat_Q_init_t0=mat_Q_init_t0
 )
 
