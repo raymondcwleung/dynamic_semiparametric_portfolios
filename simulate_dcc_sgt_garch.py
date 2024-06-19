@@ -29,7 +29,7 @@ jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 seed = 1234567
 key = random.key(seed)
 rng = np.random.default_rng(seed)
-num_sample = int(3e2)
+num_sample = int(1e3)
 dim = 5
 num_cores = 8
 
@@ -51,7 +51,7 @@ params_z_sgt_true = sgt.ParamsZSgt(
 
 # Set the initial t = 0 conditions for the various processes
 # in constructing time-varying parameters
-inittimecond_z_sgt = sgt.InitTimeConditionZSgt(
+inittimecond_z_sgt_true = sgt.InitTimeConditionZSgt(
     vec_z_init_t0=jnp.repeat(0.0, dim),
     vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
     vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
@@ -79,7 +79,7 @@ params_mvar_cor_true = dcc.ParamsMVarCor(
 
 # Package all the DCC params together
 params_dcc_true = dcc.ParamsDcc(
-    mean=params_mean_true, uvar_vol=params_uvar_vol_true, mvar_cor=params_mvar_cor_true
+    uvar_vol=params_uvar_vol_true, mvar_cor=params_mvar_cor_true
 )
 
 
@@ -87,8 +87,16 @@ params_dcc_true = dcc.ParamsDcc(
 subkeys = random.split(key, 2)
 mat_Sigma_init_t0 = dcc.generate_random_cov_mat(key=subkeys[0], dim=dim)
 mat_Q_init_t0 = dcc.generate_random_cov_mat(key=subkeys[1], dim=dim)
-inittimecond_dcc = dcc.InitTimeConditionDcc(
+inittimecond_dcc_true = dcc.InitTimeConditionDcc(
     mat_Sigma_init_t0=mat_Sigma_init_t0, mat_Q_init_t0=mat_Q_init_t0
+)
+
+# Put everything together
+params_dcc_sgt_garch_true = dcc.ParamsDccSgtGarch(
+    mean=params_mean_true, dcc=params_dcc_true, sgt=params_z_sgt_true
+)
+inittimecond_dcc_sgt_garch_true = dcc.InitTimeConditionDccSgtGarch(
+    sgt=inittimecond_z_sgt_true, dcc=inittimecond_dcc_true
 )
 
 #################################################################
@@ -101,12 +109,7 @@ dcc.simulate_dcc_sgt_garch(
     key=key,
     dim=dim,
     num_sample=num_sample,
-    # SGT parameters
-    params_z_sgt_true=params_z_sgt_true,
-    inittimecond_z_sgt=inittimecond_z_sgt,
-    # DCC-GARCH parameters
-    params_dcc_true=params_dcc_true,
-    inittimecond_dcc=inittimecond_dcc,
-    # Saving paths
+    params_dcc_sgt_garch=params_dcc_sgt_garch_true,
+    inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_true,
     data_simreturns_savepath=data_simreturns_savepath,
 )

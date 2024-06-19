@@ -27,11 +27,13 @@ from sgt import ParamsZSgt
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    filename="logs/estimate_dcc_sgt_garch.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
     level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
-    filemode="w",
+    handlers=[
+        logging.FileHandler("logs/estimate_dcc_sgt_garch.log", mode="w"),
+        logging.StreamHandler(),
+    ],
 )
 
 
@@ -75,19 +77,20 @@ params_uvar_vol_init_guess = dcc.ParamsUVarVol(
 )
 # Initial guess for params for DCC -- multivariate Q
 params_mvar_cor_init_guess = dcc.ParamsMVarCor(
-    vec_delta=jnp.array([0.054, 0.430]),
+    vec_delta=jnp.array([0.054, 0.230]),
     mat_Qbar=dcc.generate_random_cov_mat(key=key, dim=dim) / 5,
 )
 
 # Package all the initial guess DCC params together
 params_dcc_init_guess = dcc.ParamsDcc(
-    mean=params_mean_init_guess,
     uvar_vol=params_uvar_vol_init_guess,
     mvar_cor=params_mvar_cor_init_guess,
 )
 
 params_dcc_sgt_garch_init_guess = dcc.ParamsDccSgtGarch(
-    dcc=params_dcc_init_guess, sgt=params_z_sgt_init_guess
+    sgt=params_z_sgt_init_guess,
+    mean=params_mean_init_guess,
+    dcc=params_dcc_init_guess,
 )
 
 
@@ -136,7 +139,23 @@ def params_to_arr(
     return arr
 
 
-hi = dcc._make_params_from_arr_z_sgt(x=jnp.repeat(0.25, (3 + 3 + 3) * dim), dim=dim)
+# hi = dcc._make_params_from_arr_z_sgt(x=jnp.repeat(0.25, (3 + 3 + 3) * dim), dim=dim)
+
+
+# hi = dcc._objfun_dcc_loglik(
+#     x=jnp.repeat(0.25, (3 + 3 + 3) * dim),
+#     make_params_from_arr=dcc._make_params_from_arr_z_sgt,
+#     params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
+#     inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
+#     mat_returns=mat_returns,
+# )
+
+neg_loglik_optval, params_dcc_sgt_garch_opt = dcc.dcc_sgt_garch_optimization(
+    mat_returns=mat_returns,
+    params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
+    inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
+    verbose=False,
+)
 
 breakpoint()
 
