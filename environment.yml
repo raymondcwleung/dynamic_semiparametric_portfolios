@@ -434,6 +434,7 @@ dependencies:
       - chex==0.1.86
       - click==8.1.7
       - cmake==3.29.2
+      - colorlog==6.8.2
       - contourpy==1.2.0
       - cycler==0.12.1
       - cython==3.0.5
