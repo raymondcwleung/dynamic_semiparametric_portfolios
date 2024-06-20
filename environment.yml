@@ -111,6 +111,8 @@ dependencies:
       - ipywidgets==8.1.2
       - isoduration==20.11.0
       - jax==0.4.30
+      - jax-cuda12-pjrt==0.4.30
+      - jax-cuda12-plugin==0.4.30
       - jaxlib==0.4.30
       - jaxopt==0.8.3
       - jaxtyping==0.2.30
@@ -145,6 +147,16 @@ dependencies:
       - notebook==7.1.2
       - notebook-shim==0.2.4
       - numpy==2.0.0
+      - nvidia-cublas-cu12==12.5.2.13
+      - nvidia-cuda-cupti-cu12==12.5.39
+      - nvidia-cuda-nvcc-cu12==12.5.40
+      - nvidia-cuda-runtime-cu12==12.5.39
+      - nvidia-cudnn-cu12==9.1.1.17
+      - nvidia-cufft-cu12==11.2.3.18
+      - nvidia-cusolver-cu12==11.6.2.40
+      - nvidia-cusparse-cu12==12.4.1.24
+      - nvidia-nccl-cu12==2.22.3
+      - nvidia-nvjitlink-cu12==12.5.40
       - opt-einsum==3.3.0
       - optax==0.2.2
       - optimistix==0.0.7
