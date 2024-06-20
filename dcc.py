@@ -63,6 +63,11 @@ class ParamsMean:
 
     vec_mu: jpt.Float[jpt.Array, "dim"]
 
+    def check_constraints(self) -> bool:
+        # No particular constraints on the mean
+        valid = True
+        return valid
+
 
 @chex.dataclass
 class ParamsUVarVol:
@@ -70,25 +75,53 @@ class ParamsUVarVol:
     Parameters for the univariate volatilities in a DCC-GARCH model
     """
 
-    vec_omega: jpt.Float[jpt.Array, "dim"]
-    vec_beta: jpt.Float[jpt.Array, "dim"]
     vec_alpha: jpt.Float[jpt.Array, "dim"]
+    vec_beta: jpt.Float[jpt.Array, "dim"]
+    vec_omega: jpt.Float[jpt.Array, "dim"]
     vec_psi: jpt.Float[jpt.Array, "dim"]
 
-    # def __post_init__(self):
-    #     # All \omega, \beta, \alpha, \psi quantities must be
-    #     # strictly positive
-    #     if jnp.any(self.vec_omega < 0):
-    #         raise ValueError("Must have positive-valued \\omega entries")
-    #
-    #     if jnp.any(self.vec_beta < 0):
-    #         raise ValueError("Must have positive-valued \\beta entries")
-    #
-    #     if jnp.any(self.vec_alpha < 0):
-    #         raise ValueError("Must have positive-valued \\alpha entries")
-    #
-    #     if jnp.any(self.vec_psi < 0):
-    #         raise ValueError("Must have positive-valued \\psi entries")
+    def check_constraints(self) -> jpt.Bool:
+        # All \omega, \beta, \alpha, \psi quantities must be
+        # strictly positive
+
+        valid_constraints_alpha = jax.lax.select(
+            pred=jnp.any(self.vec_alpha > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_beta = jax.lax.select(
+            pred=jnp.any(self.vec_beta > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_omega = jax.lax.select(
+            pred=jnp.any(self.vec_omega > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_psi = jax.lax.select(
+            pred=jnp.any(self.vec_psi > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        vec_constraints = jnp.array(
+            [
+                valid_constraints_alpha,
+                valid_constraints_beta,
+                valid_constraints_omega,
+                valid_constraints_psi,
+            ]
+        )
+        valid_constraints = jax.lax.select(
+            pred=jnp.all(vec_constraints),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+        return valid_constraints
 
 
 @chex.dataclass
@@ -100,23 +133,77 @@ class ParamsMVarCor:
     vec_delta: jpt.Float[jpt.Array, "2"]
     mat_Qbar: jpt.Float[jpt.Array, "dim dim"]
 
-    # def __post_init__(self):
-    #     # Check constraints on \delta
-    #     if jnp.size(self.vec_delta) != 2:
-    #         raise ValueError("\\delta must have exactly two elements")
-    #
-    #     if jnp.any(self.vec_delta < 0) or jnp.any(self.vec_delta > 1):
-    #         raise ValueError("All \\delta parameter entries must be in (0,1)")
-    #
-    #     if jnp.sum(self.vec_delta) > 1:
-    #         raise ValueError(
-    #             "Sum of \\delta[0] + \\delta[1] must be strictly less than 1"
-    #         )
-    #
-    #     # Check constraints on \bar{Q}
-    #     eigvals, _ = jnp.linalg.eigh(self.mat_Qbar)
-    #     if jnp.any(eigvals < 0):
-    #         raise ValueError("\\bar{Q} must be PSD")
+    def check_constraints(self) -> jpt.Bool:
+
+        # Check constraints on \delta
+        valid_constraints_vec_delta_size = jax.lax.select(
+            pred=jnp.size(self.vec_delta) == 2,
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_vec_delta_range_lo = jax.lax.select(
+            pred=jnp.all(self.vec_delta > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_vec_delta_range_hi = jax.lax.select(
+            pred=jnp.all(self.vec_delta < 1),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        valid_constraints_vec_delta_sum = jax.lax.select(
+            pred=jnp.sum(self.vec_delta) < 1,
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        # Check constraints on \bar{Q}
+        eigvals, _ = jnp.linalg.eigh(self.mat_Qbar)
+        valid_constraints_mat_Qbar_psd = jax.lax.select(
+            pred=jnp.all(eigvals > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        vec_constraints = jnp.array(
+            [
+                valid_constraints_vec_delta_size,
+                valid_constraints_vec_delta_range_lo,
+                valid_constraints_vec_delta_range_hi,
+                valid_constraints_vec_delta_sum,
+                valid_constraints_mat_Qbar_psd,
+            ]
+        )
+        valid_constraints = jax.lax.select(
+            pred=jnp.all(vec_constraints),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+        return valid_constraints
+
+        # valid = True
+        # # Check constraints on \delta
+        # if jnp.size(self.vec_delta) != 2:
+        #     raise ValueError("\\delta must have exactly two elements")
+        #
+        # if jnp.any(self.vec_delta < 0) or jnp.any(self.vec_delta > 1):
+        #     logger.info("All \\delta parameter entries must be in (0,1)")
+        #     valid = False
+        #
+        # if jnp.sum(self.vec_delta) > 1:
+        #     logger.info("Sum of \\delta[0] + \\delta[1] must be strictly less than 1")
+        #     valid = False
+        #
+        # # Check constraints on \bar{Q}
+        # eigvals, _ = jnp.linalg.eigh(self.mat_Qbar)
+        # if jnp.any(eigvals < 0):
+        #     logger.info("\\bar{Q} must be PSD")
+        #     valid = False
+        #
+        # return valid
 
 
 @chex.dataclass
@@ -173,37 +260,9 @@ class InitTimeConditionDccSgtGarch:
 
 logger = logging.getLogger(__name__)
 
-NUM_LBDA_TVPARAMS = 3
-NUM_P0_TVPARAMS = 3
-NUM_Q0_TVPARAMS = 3
-
-# DICT_INIT_T0_CONDITIONS = "dict_init_t0_conditions"
-# DICT_PARAMS_MEAN = "dict_params_mean"
-# DICT_PARAMS_Z = "dict_params_z"
-# DICT_PARAMS_DCC_UVAR_VOL = "dict_params_dcc_uvar_vol"
-# DICT_PARAMS_DCC_MVAR_COR = "dict_params_dcc_mvar_cor"
-
-# # Time t = 0 initial conditions
-# VEC_SIGMA_0 = "vec_sigma_0"
-# MAT_Q_0 = "mat_Q_0"
-#
-# # SGT parameters
-# VEC_LBDA = "vec_lbda"
-# VEC_P0 = "vec_p0"
-# VEC_Q0 = "vec_q0"
-#
-# # Mean return parameters
-# VEC_MU = "vec_mu"
-#
-# # Univariate volatilities parameters
-# VEC_OMEGA = "vec_omega"
-# VEC_BETA = "vec_beta"
-# VEC_ALPHA = "vec_alpha"
-# VEC_PSI = "vec_psi"
-#
-# # Multivariate DCC parameters
-# VEC_DELTA = "vec_delta"
-# MAT_QBAR = "mat_Qbar"
+# NUM_LBDA_TVPARAMS = 3
+# NUM_P0_TVPARAMS = 3
+# NUM_Q0_TVPARAMS = 3
 
 
 @dataclass
@@ -1104,6 +1163,12 @@ def _objfun_dcc_loglik(
     else:
         _params = make_params_from_arr(x=x, dim=dim)
 
+    # Check if constraints on the parameters are violated
+    valid_constraints = _params.check_constraints()
+    if valid_constraints is False:
+        neg_loglik = jnp.inf
+        return neg_loglik
+
     # Update with the rest of the parameters that are held fixed
     if optimizing_params_name == "_make_params_from_arr_z_sgt":
         params_dcc_sgt_garch.sgt = _params
@@ -1127,7 +1192,6 @@ def _objfun_dcc_loglik(
         logger.info(str(e))
         logger.info(f"{params_dcc_sgt_garch}")
         neg_loglik = jnp.inf
-
     except Exception as e:
         logger.info(f"{e}")
         neg_loglik = jnp.inf
@@ -1250,6 +1314,7 @@ def dcc_sgt_garch_optimization(
         #################################################################
         ## Step 1: Optimize for the parameters of z_t
         #################################################################
+
         x0_z = params_to_arr(params_dcc_sgt_garch.sgt)
         optres_z = solver_obj_z.run(
             init_params=x0_z, params_dcc_sgt_garch=params_dcc_sgt_garch

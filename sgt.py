@@ -79,24 +79,60 @@ class ParamsZSgt(ParamsZ):
     # num_p0_tvparams: int = NUM_P0_TVPARAMS
     # num_q0_tvparams: int = NUM_Q0_TVPARAMS
 
-    # def __post_init__(self):
-    #     # Constraints on the data generating process of \lambda_t
-    #     if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
-    #         raise ValueError(
-    #             "The first parameter of lbda_tvparams must be strictly positive"
-    #         )
-    #
-    #     # Constraints on the data generating process of p_t
-    #     if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
-    #         raise ValueError(
-    #             "The first parameter of p0_tvparams must be strictly positive"
-    #         )
-    #
-    #     # Constraints on the data generating process of q_t
-    #     if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
-    #         raise ValueError(
-    #             "The first parameter of q0_tvparams must be strictly positive"
-    #         )
+    def check_constraints(self) -> jpt.Bool:
+        # Constraints on the data generating process of \lambda_t
+        valid_constraints_lbda = jax.lax.select(
+            pred=jnp.any(self.mat_lbda_tvparams[0, :] > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        # Constraints on the data generating process of p_t
+        valid_constraints_p0 = jax.lax.select(
+            pred=jnp.any(self.mat_p0_tvparams[0, :] > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        # Constraints on the data generating process of q_t
+        valid_constraints_q0 = jax.lax.select(
+            pred=jnp.any(self.mat_q0_tvparams[0, :] > 0),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+
+        vec_constraints = jnp.array(
+            [valid_constraints_lbda, valid_constraints_p0, valid_constraints_q0]
+        )
+        valid_constraints = jax.lax.select(
+            pred=jnp.all(vec_constraints),
+            on_true=jnp.array(True),
+            on_false=jnp.array(False),
+        )
+        return valid_constraints
+
+        breakpoint()
+
+        # HACK:
+        # # Constraints on the data generating process of \lambda_t
+        # breakpoint()
+        # if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
+        #     logger.info(
+        #         "The first parameter of lbda_tvparams must be strictly positive"
+        #     )
+        #     valid_constraints = False
+        #
+        # # Constraints on the data generating process of p_t
+        # if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
+        #     logger.info("The first parameter of p0_tvparams must be strictly positive")
+        #     valid_constraints = False
+        #
+        # # Constraints on the data generating process of q_t
+        # if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
+        #     logger.info("The first parameter of q0_tvparams must be strictly positive")
+        #     valid_constraints = False
+
+        return valid_constraints_lbda
 
 
 @chex.dataclass
