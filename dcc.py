@@ -85,25 +85,25 @@ class ParamsUVarVol:
         # strictly positive
 
         valid_constraints_alpha = jax.lax.select(
-            pred=jnp.any(self.vec_alpha > 0),
+            pred=jnp.all(self.vec_alpha > 0),
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
 
         valid_constraints_beta = jax.lax.select(
-            pred=jnp.any(self.vec_beta > 0),
+            pred=jnp.all(self.vec_beta > 0),
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
 
         valid_constraints_omega = jax.lax.select(
-            pred=jnp.any(self.vec_omega > 0),
+            pred=jnp.all(self.vec_omega > 0),
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
 
         valid_constraints_psi = jax.lax.select(
-            pred=jnp.any(self.vec_psi > 0),
+            pred=jnp.all(self.vec_psi > 0),
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
