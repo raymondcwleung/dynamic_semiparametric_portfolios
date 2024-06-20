@@ -453,7 +453,6 @@ dependencies:
       - h11==0.14.0
       - itsdangerous==2.1.2
       - jax==0.4.26
-      - jaxlib==0.4.26+cuda12.cudnn89
       - jaxopt==0.8.3
       - jaxtyping==0.2.30
       - kiwisolver==1.4.5
