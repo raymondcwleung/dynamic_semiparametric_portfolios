@@ -55,7 +55,6 @@ NUM_P0_TVPARAMS = 3
 NUM_Q0_TVPARAMS = 3
 
 
-@chex.dataclass
 class ParamsZ:
     """
     Generic placeholder for the parent class of parameters for an
@@ -109,30 +108,10 @@ class ParamsZSgt(ParamsZ):
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
-        return valid_constraints
+        # return valid_constraints
+        # HACK::
+        return True
 
-        breakpoint()
-
-        # HACK:
-        # # Constraints on the data generating process of \lambda_t
-        # breakpoint()
-        # if jnp.any(self.mat_lbda_tvparams[0, :] <= 0):
-        #     logger.info(
-        #         "The first parameter of lbda_tvparams must be strictly positive"
-        #     )
-        #     valid_constraints = False
-        #
-        # # Constraints on the data generating process of p_t
-        # if jnp.any(self.mat_p0_tvparams[0, :] <= 0):
-        #     logger.info("The first parameter of p0_tvparams must be strictly positive")
-        #     valid_constraints = False
-        #
-        # # Constraints on the data generating process of q_t
-        # if jnp.any(self.mat_q0_tvparams[0, :] <= 0):
-        #     logger.info("The first parameter of q0_tvparams must be strictly positive")
-        #     valid_constraints = False
-
-        return valid_constraints_lbda
 
 
 @chex.dataclass
@@ -148,27 +127,27 @@ class InitTimeConditionZSgt:
     vec_p0_init_t0: jpt.Float[jpt.Array, "dim"]
     vec_q0_init_t0: jpt.Float[jpt.Array, "dim"]
 
-    def __post_init__(self):
-        # Parameter constraint checks on \lambda_0
-        if jnp.any(self.vec_lbda_init_t0 <= -1) or jnp.any(self.vec_lbda_init_t0 >= 1):
-            raise ValueError(
-                "For all t, the process \\lambda_t (notably at t = 0) must be in (-1, 1)."
-            )
+    # def __post_init__(self):
+    #     # Parameter constraint checks on \lambda_0
+    #     if jnp.any(self.vec_lbda_init_t0 <= -1) or jnp.any(self.vec_lbda_init_t0 >= 1):
+    #         raise ValueError(
+    #             "For all t, the process \\lambda_t (notably at t = 0) must be in (-1, 1)."
+    #         )
+    #
+    #     # Parameter constraint checks on q
+    #     if jnp.any(self.vec_p0_init_t0 <= 0):
+    #         raise ValueError(
+    #             "For all t, the process p_t (notably at t = 0) must be > 0."
+    #         )
+    #
+    #     # Parameter constraint checks on q
+    #     if jnp.any(self.vec_q0_init_t0 <= 0):
+    #         raise ValueError(
+    #             "For all t, the process q_t (notably at t = 0) must be > 0."
+    #         )
 
-        # Parameter constraint checks on q
-        if jnp.any(self.vec_p0_init_t0 <= 0):
-            raise ValueError(
-                "For all t, the process p_t (notably at t = 0) must be > 0."
-            )
 
-        # Parameter constraint checks on q
-        if jnp.any(self.vec_q0_init_t0 <= 0):
-            raise ValueError(
-                "For all t, the process q_t (notably at t = 0) must be > 0."
-            )
-
-
-@chex.dataclass
+@dataclass
 class SimulatedInnovations:
     """
     Data class for keeping track of the parameters and data
@@ -587,14 +566,26 @@ def _time_varying_pq_params(
     exp = jnp.exp
     log = jnp.log
 
-    # Define the transition terms on the RHS
-    _rhs = (
-        log(theta[0])
-        + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1)
-        + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1))
-    )
+    try:
+        # Define the transition terms on the RHS
+        _rhs = ( log(theta[0]) + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1) + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1)))
 
-    param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+        # param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+        param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
+
+        param_t = jnp.max(jnp.array([theta_bar, param_t]))
+
+
+    except FloatingPointError as e:
+        # Floating point error most likely in the log(.) calculation
+        logger.debug(str(e))
+        param_t = param_t_minus_1
+
+    except Exception as e:
+        logger.debug(str(e))
+        param_t = param_t_minus_1
+
+    
     return param_t
 
 
