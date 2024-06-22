@@ -105,8 +105,8 @@ inittimecond_dcc_guess = dcc.InitTimeConditionDcc(
 inittimecond_z_sgt_guess = sgt.InitTimeConditionZSgt(
     vec_z_init_t0=jnp.repeat(0.0, dim),
     vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
-    vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
-    vec_q0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
+    vec_p0_init_t0=jnp.array(rng.uniform(3, 4, dim)),
+    vec_q0_init_t0=jnp.array(rng.uniform(3, 4, dim)),
 )
 
 inittimecond_dcc_sgt_garch_guess = dcc.InitTimeConditionDccSgtGarch(

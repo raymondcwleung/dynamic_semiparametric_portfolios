@@ -50,9 +50,9 @@ from sgt import ParamsZSgt, SimulatedInnovations
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
 jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
-
+@chex.dataclass
 class ParamsMean:
     """
     Parameters for the mean returns in a DCC-GARCH model
@@ -66,6 +66,7 @@ class ParamsMean:
         return valid
 
 
+@chex.dataclass
 class ParamsUVarVol:
     """
     Parameters for the univariate volatilities in a DCC-GARCH model
@@ -122,6 +123,7 @@ class ParamsUVarVol:
         return True
 
 
+@chex.dataclass
 class ParamsMVarCor:
     """
     Parameters for the multivariate Q_t process in a DCC-GARCH model
@@ -185,6 +187,7 @@ class ParamsMVarCor:
 
 
 
+@chex.dataclass
 class ParamsDcc:
     """
     Collect all the parameters of a DCC-GARCH model.
@@ -194,6 +197,7 @@ class ParamsDcc:
     mvar_cor: ParamsMVarCor
 
 
+@chex.dataclass
 class ParamsModel:
     """
     Generic parent class for holding the parameters of an entire DCC-X-GARCH
@@ -205,6 +209,7 @@ class ParamsModel:
     dcc: ParamsDcc
 
 
+@chex.dataclass
 class ParamsDccSgtGarch(ParamsModel):
     """
     Collect all the parameters of a DCC-SGT-GARCH model
@@ -213,6 +218,7 @@ class ParamsDccSgtGarch(ParamsModel):
     sgt: sgt.ParamsZSgt
 
 
+@chex.dataclass
 class InitTimeConditionDcc:
     """
     Initial conditions related to the process Q_t.
@@ -227,19 +233,13 @@ class InitTimeConditionDcc:
         self.vec_sigma_init_t0 = jnp.sqrt(jnp.diag(self.mat_Sigma_init_t0))
 
 
+@chex.dataclass
 class InitTimeConditionDccSgtGarch:
     sgt: sgt.InitTimeConditionZSgt
     dcc: InitTimeConditionDcc
 
 
-logger = logging.getLogger(__name__)
-
-# NUM_LBDA_TVPARAMS = 3
-# NUM_P0_TVPARAMS = 3
-# NUM_Q0_TVPARAMS = 3
-
-
-@dataclass
+@chex.dataclass
 class SimulatedReturns:
     """
     Data class for keeping track of the parameters and data
@@ -682,10 +682,9 @@ def _calc_trajectory_innovations_timevarying_lbda(
     mat_lbda = jnp.empty(shape=(num_sample, dim))
     mat_lbda = mat_lbda.at[0].set(vec_lbda_init_t0)
 
-    _func_lbda = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
-
+    _func = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
     def _body_fun(tt, mat_lbda):
-        vec_lbda_t = _func_lbda(mat_lbda_tvparams, mat_lbda[tt - 1], mat_z[tt - 1, :])
+        vec_lbda_t = _func(mat_lbda_tvparams, mat_lbda[tt - 1], mat_z[tt - 1, :])
         mat_lbda = mat_lbda.at[tt].set(vec_lbda_t)
         return mat_lbda
 
@@ -710,12 +709,11 @@ def _calc_trajectory_innovations_timevarying_pq(
     mat = jnp.empty(shape=(num_sample, dim))
     mat = mat.at[0].set(vec_pq_init_t0)
 
-    _func_lbda = vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
-
-    def _body_fun(tt, mat_lbda):
-        vec_lbda_t = _func_lbda(mat_pq_tvparams, mat_lbda[tt - 1], mat_z[tt - 1, :])
-        mat_lbda = mat_lbda.at[tt].set(vec_lbda_t)
-        return mat_lbda
+    _func = vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
+    def _body_fun(tt, mat_pq):
+        vec_pq_t = _func(mat_pq_tvparams, mat_pq[tt - 1], mat_z[tt - 1, :])
+        mat_pq = mat_pq.at[tt].set(vec_pq_t)
+        return mat_pq
 
     mat = jax.lax.fori_loop(lower=1, upper=num_sample, body_fun=_body_fun, init_val=mat)
     return mat
@@ -742,7 +740,7 @@ def calc_trajectories(
     # Extract the parameters and t = 0 initial conditions
     mat_lbda_tvparams = params_dcc_sgt_garch.sgt.mat_lbda_tvparams
     mat_p0_tvparams = params_dcc_sgt_garch.sgt.mat_p0_tvparams
-    mat_q0_tvparams = params_dcc_sgt_garch.sgt.mat_p0_tvparams
+    mat_q0_tvparams = params_dcc_sgt_garch.sgt.mat_q0_tvparams
 
     vec_mu = params_dcc_sgt_garch.mean.vec_mu
 
@@ -927,7 +925,6 @@ def _simulate_returns(
     return simreturns
 
 
-@jit
 def dcc_sgt_loglik(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -997,7 +994,7 @@ def params_to_arr(
     return arr
 
 
-def _make_params_from_arr_z_sgt(x, dim) -> sgt.ParamsZSgt:
+def _make_params_from_arr_z_sgt(x : jpt.Array, dim : int) -> sgt.ParamsZSgt:
     """
     Take a vector x and split them into parameters related to the
     time-varying SGT process
@@ -1037,7 +1034,7 @@ def _make_params_from_arr_z_sgt(x, dim) -> sgt.ParamsZSgt:
     return params_z_sgt
 
 
-def _make_params_from_arr_mean(x, dim) -> ParamsMean:
+def _make_params_from_arr_mean(x : jpt.Array, dim : int) -> ParamsMean:
     """
     Take a vector x and split them into parameters related to the
     mean \\mu
@@ -1055,7 +1052,7 @@ def _make_params_from_arr_mean(x, dim) -> ParamsMean:
     return params_mean
 
 
-def _make_params_from_arr_dcc_uvar_vol(x, dim) -> ParamsUVarVol:
+def _make_params_from_arr_dcc_uvar_vol(x : jpt.Array, dim :int) -> ParamsUVarVol:
     """
     Take a vector x and split them into parameters related to the
     univariate GARCH processes.
@@ -1071,8 +1068,8 @@ def _make_params_from_arr_dcc_uvar_vol(x, dim) -> ParamsUVarVol:
 
 
 def _make_params_from_arr_dcc_mvar_cor(
-    x,
-    dim,
+    x : jpt.Array,
+    dim : int,
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
@@ -1116,31 +1113,43 @@ def _make_params_from_arr_dcc_mvar_cor(
     params_mvar_cor = ParamsMVarCor(vec_delta=vec_delta, mat_Qbar=mat_Qbar)
     return params_mvar_cor
 
+def params_update(params : sgt.ParamsZSgt | ParamsMean | ParamsUVarVol | ParamsMVarCor, 
+                  params_dcc_sgt_garch : ParamsDccSgtGarch) -> ParamsDccSgtGarch:
+    """
+    Convenient function to update parameters into the main parameters dataclass.
+    """
+    if isinstance(params, ParamsZSgt):
+        params_dcc_sgt_garch.sgt = params
+    elif isinstance(params, ParamsMean):
+        params_dcc_sgt_garch.mean = params
+    elif isinstance(params, ParamsUVarVol):
+        params_dcc_sgt_garch.dcc.uvar_vol = params
+    elif isinstance(params, ParamsMVarCor):
+        params_dcc_sgt_garch.dcc.mvar_cor = params
+    else:
+        raise ValueError("Incorrect specification")
+
+    return params_dcc_sgt_garch
+
 
 def _objfun_dcc_loglik(
-    x,
+    x : jpt.Array,
     make_params_from_arr,
     params_dcc_sgt_garch: ParamsDccSgtGarch,
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
-) -> jpt.Float:
+) -> tp.Tuple[jpt.Float, ParamsDccSgtGarch]:
     dim = mat_returns.shape[1]
 
     # Construct the dict for the parameters
     # that are to be optimized over
     optimizing_params_name = make_params_from_arr.__name__
-    if optimizing_params_name == "_make_params_from_arr_dcc_mvar_cor":
+    if optimizing_params_name == "__make_params_from_arr_dcc_mvar_cor":
         # Special treatment in handling the estimate of
         # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
-        _params = make_params_from_arr(
-            x=x,
-            dim=dim,
-            mat_returns=mat_returns,
-            params_dcc_sgt_garch=params_dcc_sgt_garch,
-            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
-        )
+        _params = make_params_from_arr(x, dim, params_dcc_sgt_garch)
     else:
-        _params = make_params_from_arr(x=x, dim=dim)
+        _params = make_params_from_arr(x, dim)
 
     # # HACK:
     # # Check if constraints on the parameters are violated
@@ -1148,18 +1157,10 @@ def _objfun_dcc_loglik(
     # if valid_constraints is False:
     #     neg_loglik = jnp.inf
     #     return neg_loglik
+    #
 
-    # Update with the rest of the parameters that are held fixed
-    if optimizing_params_name == "_make_params_from_arr_z_sgt":
-        params_dcc_sgt_garch.sgt = _params
-    elif optimizing_params_name == "_make_params_from_arr_mean":
-        params_dcc_sgt_garch.mean = _params
-    elif optimizing_params_name == "_make_params_from_arr_dcc_uvar_vol":
-        params_dcc_sgt_garch.dcc.uvar_vol = _params
-    elif optimizing_params_name == "_make_params_from_arr_dcc_mvar_cor":
-        params_dcc_sgt_garch.dcc.mvar_cor = _params
-    else:
-        raise ValueError("Incorrect specification of 'make_params_from_arr'")
+    params_dcc_sgt_garch = params_update(params = _params, params_dcc_sgt_garch=params_dcc_sgt_garch)
+
 
     # Compute (negative) of the log-likelihood
     # try:
@@ -1176,13 +1177,15 @@ def _objfun_dcc_loglik(
     #     logger.info(f"{e}")
     #     neg_loglik = jnp.inf
     #
+
+    logger.debug(params_dcc_sgt_garch)
     neg_loglik = dcc_sgt_loglik(
         mat_returns=mat_returns,
         params_dcc_sgt_garch=params_dcc_sgt_garch,
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
     )
 
-    return neg_loglik
+    return neg_loglik, params_dcc_sgt_garch
 
 
 # def _make_params_array_from_dict_params(
@@ -1200,13 +1203,62 @@ def _objfun_dcc_loglik(
 #     return x0
 
 
+def build_estimation_step(optimizer: optax.GradientTransformation, loss_fn : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]]):
+    """
+    Builds a function for executing a single step in the optimization
+    """
+
+    @jit
+    def _update(x, opt_state, params_dcc_sgt_garch):
+        grads, params_dcc_sgt_garch = jax.grad(loss_fn, has_aux=True)(x, params_dcc_sgt_garch)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        x = optax.apply_updates(x, updates)
+
+        return x, opt_state, params_dcc_sgt_garch
+
+    return _update
+
+def fit(optimizer : optax.GradientTransformation, 
+        loss_fn : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]], 
+        x_init : jpt.Array, 
+        params_dcc_sgt_garch : ParamsDccSgtGarch, 
+        make_params_from_arr,
+        dim : int,
+        numiter : int,
+        projection : None | tp.Callable[[jpt.PyTree], jpt.PyTree] = None
+        ) -> ParamsDccSgtGarch:
+    """
+    Fit
+    """
+    train_step = build_estimation_step(optimizer, loss_fn)
+
+    x = x_init
+    opt_state = optimizer.init(x)
+
+    for _ in range(numiter):
+        x, opt_state, params_dcc_sgt_garch = train_step(x, opt_state, params_dcc_sgt_garch)
+        if projection is not None:
+            x = projection(x)
+
+        # Special treatment in handling the estimate of
+        # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
+        if make_params_from_arr.__name__ == "__make_params_from_arr_dcc_mvar_cor":
+            _params = make_params_from_arr(x, dim, params_dcc_sgt_garch)
+            params_dcc_sgt_garch = params_update(_params, params_dcc_sgt_garch=params_dcc_sgt_garch)
+
+
+        logger.debug(f"Value function at {loss_fn(x, params_dcc_sgt_garch)}")
+
+    return params_dcc_sgt_garch
+
+
 def dcc_sgt_garch_optimization(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
     verbose: bool = False,
     grand_maxiter: int = 5,
-    maxiter: int = 100,
+    inner_maxiter: int = 100,
     tol: float = 1e-3,
     jit: bool = True,
     solver_z=jaxopt.NonlinearCG,
@@ -1224,7 +1276,7 @@ def dcc_sgt_garch_optimization(
     #################################################################
     ## Setup partial objective functions
     #################################################################
-    objfun_dcc_loglik_opt_params_z = lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
+    objfun_dcc_loglik_opt_params_z : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]]= lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
         x=x,
         make_params_from_arr=_make_params_from_arr_z_sgt,
         params_dcc_sgt_garch=params_dcc_sgt_garch,
@@ -1232,8 +1284,7 @@ def dcc_sgt_garch_optimization(
         mat_returns=mat_returns,
     )
 
-    objfun_dcc_loglik_opt_params_mean = (
-        lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
+    objfun_dcc_loglik_opt_params_mean : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]] = ( lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
             x=x,
             make_params_from_arr=_make_params_from_arr_mean,
             params_dcc_sgt_garch=params_dcc_sgt_garch,
@@ -1242,7 +1293,7 @@ def dcc_sgt_garch_optimization(
         )
     )
 
-    objfun_dcc_loglik_opt_params_dcc_uvar_vol = (
+    objfun_dcc_loglik_opt_params_dcc_uvar_vol : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]]= (
         lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
             x=x,
             make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
@@ -1252,57 +1303,80 @@ def dcc_sgt_garch_optimization(
         )
     )
 
+
+    # Note special treatmeant here for updating DCC Q_t 
+    # parameters
+    def __make_params_from_arr_dcc_mvar_cor(x : jpt.Array, dim : int, params_dcc_sgt_garch : ParamsDccSgtGarch): 
+        return _make_params_from_arr_dcc_mvar_cor(x = x,
+                                                  dim = dim,
+                                                  mat_returns=mat_returns, 
+                                                  params_dcc_sgt_garch=params_dcc_sgt_garch, 
+                                                  inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+
     objfun_dcc_loglik_opt_params_dcc_mvar_cor = (
         lambda x, params_dcc_sgt_garch: _objfun_dcc_loglik(
             x=x,
-            make_params_from_arr=_make_params_from_arr_dcc_mvar_cor,
+            make_params_from_arr=__make_params_from_arr_dcc_mvar_cor,
             params_dcc_sgt_garch=params_dcc_sgt_garch,
             inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
             mat_returns=mat_returns,
         )
     )
 
+
     #################################################################
     ## Setup partial solvers
     #################################################################
-    solver_obj_z = solver_z(
-        fun=objfun_dcc_loglik_opt_params_z,
-        verbose=verbose,
-        maxiter=maxiter,
-        tol=tol,
-        jit = jit
-    )
+    # solver_obj_z = solver_z(
+    #     fun=objfun_dcc_loglik_opt_params_z,
+    #     verbose=verbose,
+    #     maxiter=maxiter,
+    #     tol=tol,
+    #     jit = jit
+    # )
+    #
+    # solver_obj_mean = solver_mean(
+    #     fun=objfun_dcc_loglik_opt_params_mean,
+    #     verbose=verbose,
+    #     maxiter=maxiter,
+    #     tol=tol,
+    #     jit = jit
+    # )
+    #
+    # solver_obj_dcc_uvar_vol = solver_dcc_uvar_vol(
+    #     fun=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+    #     verbose=verbose,
+    #     maxiter=maxiter,
+    #     tol=tol,
+    #     projection = jaxopt.projection.projection_non_negative,
+    #     jit = jit
+    # )
+    #
+    # solver_obj_dcc_mvar_cor = solver_dcc_mvar_cor(
+    #     fun=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
+    #     verbose=verbose,
+    #     maxiter=maxiter,
+    #     tol=tol,
+    #     jit = jit
+    # )
+    
+    start_learning_rate = 1e-1
 
-    solver_obj_mean = solver_mean(
-        fun=objfun_dcc_loglik_opt_params_mean,
-        verbose=verbose,
-        maxiter=maxiter,
-        tol=tol,
-        jit = jit
-    )
+    learning_rate_schedule = optax.piecewise_constant_schedule(init_value = 1.0,
+                                                               boundaries_and_scales= {0: 1e-4, 1: 1e-1}
+                                                               )
 
-    solver_obj_dcc_uvar_vol = solver_dcc_uvar_vol(
-        fun=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
-        verbose=verbose,
-        maxiter=maxiter,
-        tol=tol,
-        projection = jaxopt.projection.projection_non_negative,
-        jit = jit
-    )
+    optimizer_z = optax.adam(start_learning_rate)
+    optimizer_mean = optax.adam(start_learning_rate)
+    optimizer_dcc_uvar_vol = optax.adam(start_learning_rate)
+    optimizer_dcc_mvar_cor = optax.adam(start_learning_rate)
 
-    solver_obj_dcc_mvar_cor = solver_dcc_mvar_cor(
-        fun=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
-        verbose=verbose,
-        maxiter=maxiter,
-        tol=tol,
-        jit = jit
-    )
 
-    # Try JIT on the run functions
-    solver_obj_z_run_jit = jax.jit(solver_obj_z.run)
-    solver_obj_mean_run_jit = jax.jit(solver_obj_mean.run)
-    solver_obj_dcc_uvar_vol_run_jit = jax.jit(solver_obj_dcc_uvar_vol.run)
-    solver_obj_dcc_mvar_cor_run_jit = jax.jit(solver_obj_dcc_mvar_cor.run)
+    projection_strictly_positive = lambda x : optax.projections.projection_box(x, lower = 1e-3, upper = jnp.inf)
+    projection_hypercube = lambda x : optax.projections.projection_box(x, lower = 0, upper = 1)
+
+
+
 
     #################################################################
     ## Iterative log-likelihood optimization
@@ -1313,45 +1387,63 @@ def dcc_sgt_garch_optimization(
         ## Step 1: Optimize for the parameters of z_t
         #################################################################
         x0_z = params_to_arr(params_dcc_sgt_garch.sgt)
-        # optres_z = solver_obj_z.run(
-        #     init_params=x0_z, params_dcc_sgt_garch=params_dcc_sgt_garch
-        # )
-        optres_z = solver_obj_z_run_jit(
-            init_params=x0_z, params_dcc_sgt_garch=params_dcc_sgt_garch
-        )
-        params_dcc_sgt_garch.sgt = _make_params_from_arr_z_sgt(optres_z.params, dim=dim)
-        logger.info(f"..... {iter}/{grand_maxiter}: Done Step 1/4")
+        neg_loglik_val_beg = dcc_sgt_loglik(mat_returns=mat_returns,
+                                        params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        params_dcc_sgt_garch = fit(optimizer=optimizer_z,
+                                   loss_fn=objfun_dcc_loglik_opt_params_z,
+                                   x_init = x0_z,
+                                   params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                   make_params_from_arr=_make_params_from_arr_z_sgt,
+                                   dim = dim,
+                                   numiter = inner_maxiter)
+        neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
+                                        params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        logger.info(f"..... {iter}/{grand_maxiter}: Step 1/4 --- Optimize innovation z_t params. Objective function value changed from {neg_loglik_val_beg} to {neg_loglik_val_end}.")
+
 
         #################################################################
         ## Step 2: Optimize for the parameters of the mean \mu
         #################################################################
         x0_mean = params_to_arr(params_dcc_sgt_garch.mean)
-        # optres_mean = solver_obj_mean.run(
-        #     init_params=x0_mean, params_dcc_sgt_garch=params_dcc_sgt_garch
-        # )
-        optres_mean = solver_obj_mean_run_jit(
-            init_params=x0_mean, params_dcc_sgt_garch=params_dcc_sgt_garch
-        )
-        params_dcc_sgt_garch.mean = _make_params_from_arr_mean(
-            optres_mean.params, dim=dim
-        )
-        logger.info(f"..... {iter}/{grand_maxiter}: Done Step 2/4")
+        neg_loglik_val_beg = dcc_sgt_loglik(mat_returns=mat_returns,
+                                        params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        params_dcc_sgt_garch = fit(optimizer=optimizer_mean,
+                                   loss_fn=objfun_dcc_loglik_opt_params_mean,
+                                   x_init = x0_mean,
+                                   params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                   make_params_from_arr=_make_params_from_arr_mean,
+                                   dim = dim,
+                                   numiter = inner_maxiter)
+        neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
+                                        params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        logger.info(f"..... {iter}/{grand_maxiter}: Step 2/4 --- Optimize mean \\mu params. Objective function value changed from {neg_loglik_val_beg} to {neg_loglik_val_end}.")
+
 
         #################################################################
         ## Step 3: Optimize for the parameters of the univariate vol's
         ##         \sigma_{i,t}'s
         #################################################################
         x0_dcc_uvar_vol = params_to_arr(params_dcc_sgt_garch.dcc.uvar_vol)
-        # optres_dcc_uvar_vol = solver_obj_dcc_uvar_vol.run(
-        #     init_params=x0_dcc_uvar_vol, params_dcc_sgt_garch=params_dcc_sgt_garch
-        # )
-        optres_dcc_uvar_vol = solver_obj_dcc_uvar_vol_run_jit(
-            init_params=x0_dcc_uvar_vol, params_dcc_sgt_garch=params_dcc_sgt_garch
-        )
-        params_dcc_sgt_garch.dcc.uvar_vol = _make_params_from_arr_dcc_uvar_vol(
-            optres_dcc_uvar_vol.params, dim=dim
-        )
-        logger.info(f"..... {iter}/{grand_maxiter}: Done Step 3/4")
+        neg_loglik_val_beg = dcc_sgt_loglik(mat_returns=mat_returns,
+                                            params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        params_dcc_sgt_garch = fit(optimizer=optimizer_dcc_uvar_vol,
+                                   loss_fn=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+                                   x_init = x0_dcc_uvar_vol,
+                                   params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                   make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
+                                   dim = dim,
+                                   numiter = inner_maxiter,
+                                   projection=projection_strictly_positive)
+        neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
+                                            params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        logger.info(f"..... {iter}/{grand_maxiter}: Step 3/4 --- Optimize univariate vol \\sigma params. Objective function value changed from {neg_loglik_val_beg} to {neg_loglik_val_end}.")
+
 
         #################################################################
         ## Step 4: Optimize for the parameters of the multivariate DCC
@@ -1360,27 +1452,27 @@ def dcc_sgt_garch_optimization(
         # Note special treatment for the initial guess for the
         # DCC multivariate parameters
         x0_dcc_mvar_cor = params_dcc_sgt_garch.dcc.mvar_cor.vec_delta
-        # optres_dcc_mvar_cor = solver_obj_dcc_mvar_cor.run(
-        #     init_params=x0_dcc_mvar_cor, params_dcc_sgt_garch=params_dcc_sgt_garch
-        # )
-        optres_dcc_mvar_cor = solver_obj_dcc_mvar_cor_run_jit(
-            init_params=x0_dcc_mvar_cor, params_dcc_sgt_garch=params_dcc_sgt_garch
-        )
-        params_dcc_mvar_cor = _make_params_from_arr_dcc_mvar_cor(
-            optres_dcc_mvar_cor.params,
-            dim=dim,
-            mat_returns=mat_returns,
-            params_dcc_sgt_garch=params_dcc_sgt_garch,
-            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
-        )
-        params_dcc_sgt_garch.dcc.mvar_cor = params_dcc_mvar_cor
-        logger.info(f"..... {iter}/{grand_maxiter}: Done Step 4/4")
+        neg_loglik_val_beg = dcc_sgt_loglik(mat_returns=mat_returns,
+                                            params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        params_dcc_sgt_garch = fit(optimizer=optimizer_dcc_mvar_cor,
+                                   loss_fn=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
+                                   x_init = x0_dcc_mvar_cor,
+                                   params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                   make_params_from_arr= __make_params_from_arr_dcc_mvar_cor,
+                                   dim = dim,
+                                   numiter = inner_maxiter,
+                                   projection=projection_hypercube)
+        neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
+                                            params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
+        logger.info(f"..... {iter}/{grand_maxiter}: Step 4/4 --- Optimize multivariate DCC Q_t params. Objective function value changed from {neg_loglik_val_beg} to {neg_loglik_val_end}.")
 
-        # Record the value of the last negative log-likelihood
-        if iter == grand_maxiter - 1:
-            neg_loglik_optval = optres_dcc_mvar_cor.state.value
 
-        logger.info(f"... done iteration {iter}/{grand_maxiter}. Likelihood value = {optres_dcc_mvar_cor.state.value }")
+    # Record the value of the last negative log-likelihood
+    neg_loglik_optval = dcc_sgt_loglik(mat_returns=mat_returns,
+                                       params_dcc_sgt_garch=params_dcc_sgt_garch,
+                                       inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
 
     logger.info(f"Done DCC-GARCH optimization.")
     return neg_loglik_optval, params_dcc_sgt_garch

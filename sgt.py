@@ -64,6 +64,7 @@ class ParamsZ:
     pass
 
 
+@chex.dataclass
 class ParamsZSgt(ParamsZ):
     """
     Time-varying parameters of innovations process z_t
@@ -113,6 +114,7 @@ class ParamsZSgt(ParamsZ):
 
 
 
+@chex.dataclass
 class InitTimeConditionZSgt:
     """
     Initial conditions related to the innovation process z_t.
@@ -145,6 +147,7 @@ class InitTimeConditionZSgt:
     #         )
 
 
+@dataclass
 class SimulatedInnovations:
     """
     Data class for keeping track of the parameters and data
@@ -563,14 +566,26 @@ def _time_varying_pq_params(
     exp = jnp.exp
     log = jnp.log
 
-    # Define the transition terms on the RHS
-    _rhs = (
-        log(theta[0])
-        + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1)
-        + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1))
-    )
+    try:
+        # Define the transition terms on the RHS
+        _rhs = ( log(theta[0]) + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1) + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1)))
 
-    param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+        # param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+        param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
+
+        param_t = jnp.max(jnp.array([theta_bar, param_t]))
+
+
+    except FloatingPointError as e:
+        # Floating point error most likely in the log(.) calculation
+        logger.debug(str(e))
+        param_t = param_t_minus_1
+
+    except Exception as e:
+        logger.debug(str(e))
+        param_t = param_t_minus_1
+
+    
     return param_t
 
 
