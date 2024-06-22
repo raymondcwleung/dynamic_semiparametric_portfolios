@@ -116,79 +116,12 @@ inittimecond_dcc_sgt_garch_guess = dcc.InitTimeConditionDccSgtGarch(
 mat_returns = simreturns.data_mat_returns
 
 
-def params_to_arr(
-    params_dataclass: (
-        sgt.ParamsZSgt | dcc.ParamsMean | dcc.ParamsUVarVol | dcc.ParamsMVarCor
-    ),
-) -> jpt.Array:
-    """
-    Take a parameter dataclass and flatten the fields to an array
-    """
-    # Note special treatment for when params_dataclass is
-    # dcc.ParamsMVarCor
-    dict_params = dataclasses.asdict(params_dataclass)
-
-    lst = []
-    # Sort the keys for consistency
-    for key in sorted(dict_params.keys()):
-        lst.append(dict_params[key])
-
-    arr = jnp.concatenate(lst)
-    return arr
-
-
-# hi = dcc._make_params_from_arr_z_sgt(x=jnp.repeat(0.25, (3 + 3 + 3) * dim), dim=dim)
-
-
-# hi = dcc._objfun_dcc_loglik(
-#     x=jnp.repeat(0.25, (3 + 3 + 3) * dim),
-#     make_params_from_arr=dcc._make_params_from_arr_z_sgt,
-#     params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
-#     inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
-#     mat_returns=mat_returns,
-# )
-
+data_simreturns_estimate_savepath = (
+    pathlib.Path().resolve() / "simulated_data/data_simreturns_timevarying_sgt_estimate.pkl"
+)
 neg_loglik_optval, params_dcc_sgt_garch_opt = dcc.dcc_sgt_garch_optimization(
     mat_returns=mat_returns,
     params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
     inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
-    verbose=False,
 )
 
-breakpoint()
-
-
-def bunny(
-    x,
-    params_z_sgt: dcc.ParamsZSgt,
-    mat_returns,
-    params_dcc_sgt_garch: dcc.ParamsDccSgtGarch,
-):
-    params_dcc_sgt_garch.sgt = params_z_sgt
-
-    val = dcc.dcc_sgt_loglik(
-        params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
-        mat_returns=mat_returns,
-        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
-    )
-    return val
-
-
-solver = jaxopt.LBFGS
-verbose = True
-solver_obj = solver(bunny, verbose=verbose)
-res = solver_obj.run(
-    params_z_sgt_init_guess,
-    mat_returns=mat_returns,
-    params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
-)
-
-breakpoint()
-
-
-# neg_loglik_optval, dict_params = dcc.dcc_sgt_garch_optimization(
-#     mat_returns=mat_returns,
-#     params_init_guess=params_dcc_sgt_garch_init_guess,
-#     # dict_params_init_guess=dict_params_init_guess,
-#     # dict_init_t0_conditions=dict_init_t0_conditions,
-# )
