@@ -29,8 +29,8 @@ jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
 seed = 1234567
 key = random.key(seed)
 rng = np.random.default_rng(seed)
-num_sample = int(3e3)
-dim = 5
+num_sample = int(1e3)
+dim = 2
 num_cores = 8
 
 #################################################################

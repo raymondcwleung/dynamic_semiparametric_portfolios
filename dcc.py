@@ -53,8 +53,8 @@ from sgt import ParamsZSgt, SimulatedInnovations, loglik_mvar_timevarying_sgt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
-jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+#jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
+#jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 @chex.dataclass
 class ParamsMean:
@@ -1296,7 +1296,7 @@ def dcc_sgt_garch_optimization(
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
     savepath : os.PathLike,
     grand_maxiter: int = 5,
-    inner_maxiter: int = 100,
+    inner_maxiter: int = 10,
     solver_z : tp.Callable[..., optax.GradientTransformation] =optax.adam,
     solver_mean : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_uvar_vol : tp.Callable[..., optax.GradientTransformation]=optax.adam,
