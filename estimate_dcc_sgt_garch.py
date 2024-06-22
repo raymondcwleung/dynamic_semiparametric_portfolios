@@ -123,5 +123,6 @@ neg_loglik_optval, params_dcc_sgt_garch_opt = dcc.dcc_sgt_garch_optimization(
     mat_returns=mat_returns,
     params_dcc_sgt_garch=params_dcc_sgt_garch_init_guess,
     inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
+    savepath=data_simreturns_estimate_savepath
 )
 
