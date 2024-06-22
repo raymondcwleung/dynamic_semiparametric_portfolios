@@ -33,10 +33,12 @@ import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 
+import utils
+
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
 # jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
 logger = logging.getLogger(__name__)
@@ -179,26 +181,6 @@ class SimulatedInnovations:
     data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
 
 
-def positive_part(x: jpt.Array) -> jpt.Array:
-    """
-    Positive part of a scalar x^{+} := \\max\\{ x, 0 \\}
-    """
-    return jnp.maximum(x, 0)
-
-
-def negative_part(x: jpt.Array) -> jpt.Array:
-    """
-    Negative part of a scalar x^{-} :=
-    \\max\\{ -x, 0 \\} = -min\\{ x, 0 \\}
-    """
-    return -1 * jnp.minimum(x, 0)
-
-
-def indicator(x: jpt.Array):
-    """
-    Indicator function x \\mapsto \\ind(x \\le 0)
-    """
-    return x <= 0
 
 
 @partial(jax.jit, static_argnames=["mu", "sigma", "mean_cent", "var_adj"])
@@ -542,6 +524,9 @@ def _time_varying_lbda_params(
     """
     tanh = jnp.tanh
     arctanh = jnp.arctanh
+    negative_part = utils.negative_part
+    positive_part = utils.positive_part
+    indicator = utils.indicator
 
     _rhs = (
         theta[0]
@@ -565,6 +550,9 @@ def _time_varying_pq_params(
     abs = jnp.abs
     exp = jnp.exp
     log = jnp.log
+    negative_part = utils.negative_part
+    positive_part = utils.positive_part
+    indicator = utils.indicator
 
     try:
         # Define the transition terms on the RHS
