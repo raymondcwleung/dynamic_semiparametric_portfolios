@@ -18,9 +18,13 @@ import pickle
 import dataclasses
 from dataclasses import dataclass
 
+from datetime import datetime
+
+
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    filename="logs/dcc.log",
+    filename=f"logs/{current_time}_dcc.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
     level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
@@ -45,7 +49,7 @@ import scipy
 import matplotlib.pyplot as plt
 
 import sgt
-from sgt import ParamsZSgt, SimulatedInnovations
+from sgt import ParamsZSgt, SimulatedInnovations, loglik_mvar_timevarying_sgt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
@@ -935,6 +939,9 @@ def dcc_sgt_loglik(
     DCC-time-varying-SGT-Asymmetric-GARCH(1,1) model
     """
     neg_loglik: bool = True
+    normalize_loglik : bool = True
+
+    num_sample = mat_returns.shape[0]
 
     logger.debug("Begin calc_trajectories")
     mat_lbda, mat_p0, mat_q0, _, _, tns_Sigma, mat_z, _ = calc_trajectories(
@@ -963,6 +970,9 @@ def dcc_sgt_loglik(
 
     # Objective function of DCC model
     loglik = sgt_loglik - 0.5 * vec_logdet_Sigma.sum()
+
+    if normalize_loglik:
+        loglik = loglik / num_sample
 
     if neg_loglik:
         loglik = -1 * loglik
