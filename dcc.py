@@ -122,9 +122,7 @@ class ParamsUVarVol:
             on_true=jnp.array(True),
             on_false=jnp.array(False),
         )
-        # return valid_constraints
-        # HACK::
-        return True
+        return valid_constraints
 
 
 @chex.dataclass
@@ -186,8 +184,7 @@ class ParamsMVarCor:
             on_false=jnp.array(False),
         )
         # return valid_constraints
-        # HACK::
-        return True
+        return valid_constraints
 
 
 
@@ -854,7 +851,7 @@ def simulate_dcc_sgt_garch(
         params_mean_true=params_dcc_sgt_garch.mean,
         params_dcc_true=params_dcc_sgt_garch.dcc,
         inittimecond_dcc=inittimecond_dcc_sgt_garch.dcc,
-        data_simreturns_savepath=data_simreturns_savepath,
+        savepath=data_simreturns_savepath,
     )
 
     return simreturns
@@ -867,7 +864,7 @@ def _simulate_returns(
     params_mean_true: ParamsMean,
     params_dcc_true: ParamsDcc,
     inittimecond_dcc: InitTimeConditionDcc,
-    data_simreturns_savepath: os.PathLike,
+    savepath: os.PathLike,
 ) -> SimulatedReturns:
     """
     Simulate asset returns.
@@ -922,9 +919,9 @@ def _simulate_returns(
         data_tns_Sigma=data_tns_Sigma,
         data_mat_returns=data_mat_returns,
     )
-    with open(data_simreturns_savepath, "wb") as f:
+    with open(savepath, "wb") as f:
         pickle.dump(simreturns, f)
-        logger.info(f"Saved DCC simulations to {str(data_simreturns_savepath)}")
+        logger.info(f"Saved DCC simulations to {str(savepath)}")
 
     return simreturns
 
@@ -1161,32 +1158,7 @@ def _objfun_dcc_loglik(
     else:
         _params = make_params_from_arr(x, dim)
 
-    # # HACK:
-    # # Check if constraints on the parameters are violated
-    # valid_constraints = _params.check_constraints()
-    # if valid_constraints is False:
-    #     neg_loglik = jnp.inf
-    #     return neg_loglik
-    #
-
     params_dcc_sgt_garch = params_update(params = _params, params_dcc_sgt_garch=params_dcc_sgt_garch)
-
-
-    # Compute (negative) of the log-likelihood
-    # try:
-    #     neg_loglik = dcc_sgt_loglik(
-    #         mat_returns=mat_returns,
-    #         params_dcc_sgt_garch=params_dcc_sgt_garch,
-    #         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
-    #     )
-    # except FloatingPointError as e:
-    #     logger.info(str(e))
-    #     logger.info(f"{params_dcc_sgt_garch}")
-    #     neg_loglik = jnp.inf
-    # except Exception as e:
-    #     logger.info(f"{e}")
-    #     neg_loglik = jnp.inf
-    #
 
     logger.debug(params_dcc_sgt_garch)
     neg_loglik = dcc_sgt_loglik(
@@ -1196,21 +1168,6 @@ def _objfun_dcc_loglik(
     )
 
     return neg_loglik, params_dcc_sgt_garch
-
-
-# def _make_params_array_from_dict_params(
-#     dict_params: tp.Dict[str, jpt.Array]
-# ) -> jpt.Array:
-#     """
-#     Take in a dictionary of parameters and flatten them to an
-#     array in preparation for optimization.
-#     """
-#     x0 = itertools.chain.from_iterable(dict_params.values())
-#     x0 = list(x0)
-#     x0 = np.array(x0)
-#     x0 = jnp.array(x0)
-#
-#     return x0
 
 def _projection_unit_simplex(x: jnp.ndarray) -> jnp.ndarray:
   """Projection onto the unit simplex."""
@@ -1337,15 +1294,14 @@ def dcc_sgt_garch_optimization(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
-    verbose: bool = False,
+    savepath : os.PathLike,
     grand_maxiter: int = 5,
     inner_maxiter: int = 100,
-    tol: float = 1e-3,
-    jit: bool = True,
-    solver_z=jaxopt.NonlinearCG,
-    solver_mean=jaxopt.NonlinearCG,
-    solver_dcc_uvar_vol=jaxopt.ProjectedGradient,
-    solver_dcc_mvar_cor=jaxopt.NonlinearCG,
+    solver_z : tp.Callable[..., optax.GradientTransformation] =optax.adam,
+    solver_mean : tp.Callable[..., optax.GradientTransformation]=optax.adam,
+    solver_dcc_uvar_vol : tp.Callable[..., optax.GradientTransformation]=optax.adam,
+    solver_dcc_mvar_cor : tp.Callable[..., optax.GradientTransformation]=optax.adam,
+    start_learning_rate  : float = 1e-1,
 ):
     """
     Run DCC-SGT-GARCH optimization
@@ -1404,50 +1360,7 @@ def dcc_sgt_garch_optimization(
         )
     )
 
-
-    #################################################################
-    ## Setup partial solvers
-    #################################################################
-    # solver_obj_z = solver_z(
-    #     fun=objfun_dcc_loglik_opt_params_z,
-    #     verbose=verbose,
-    #     maxiter=maxiter,
-    #     tol=tol,
-    #     jit = jit
-    # )
-    #
-    # solver_obj_mean = solver_mean(
-    #     fun=objfun_dcc_loglik_opt_params_mean,
-    #     verbose=verbose,
-    #     maxiter=maxiter,
-    #     tol=tol,
-    #     jit = jit
-    # )
-    #
-    # solver_obj_dcc_uvar_vol = solver_dcc_uvar_vol(
-    #     fun=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
-    #     verbose=verbose,
-    #     maxiter=maxiter,
-    #     tol=tol,
-    #     projection = jaxopt.projection.projection_non_negative,
-    #     jit = jit
-    # )
-    #
-    # solver_obj_dcc_mvar_cor = solver_dcc_mvar_cor(
-    #     fun=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
-    #     verbose=verbose,
-    #     maxiter=maxiter,
-    #     tol=tol,
-    #     jit = jit
-    # )
-    
-    learning_rate_schedule = optax.piecewise_constant_schedule(init_value = 1.0,
-                                                               boundaries_and_scales= {0: 1e-4, 1: 1e-1}
-                                                               )
-
-    start_learning_rate = 1e-1
-
-
+    # Set the projections (i.e. serve as parameter optimization constraints)
     projection_strictly_positive = lambda x : optax.projections.projection_box(x, lower = 1e-3, upper = jnp.inf)
     projection_hypercube = lambda x : optax.projections.projection_box(x, lower = 0, upper = 1)
 
@@ -1461,10 +1374,10 @@ def dcc_sgt_garch_optimization(
     for iter in range(grand_maxiter):
         # Init optimizers
         learning_rate = float(learning_schedule(iter))
-        optimizer_z = optax.adam(learning_rate)
-        optimizer_mean = optax.adam(learning_rate)
-        optimizer_dcc_uvar_vol = optax.adam(learning_rate)
-        optimizer_dcc_mvar_cor = optax.adam(learning_rate)
+        optimizer_z = solver_z(learning_rate)
+        optimizer_mean = solver_mean(learning_rate)
+        optimizer_dcc_uvar_vol = solver_dcc_uvar_vol(learning_rate)
+        optimizer_dcc_mvar_cor = solver_dcc_mvar_cor(learning_rate)
 
         #################################################################
         ## Step 1: Optimize for the parameters of z_t
@@ -1559,6 +1472,11 @@ def dcc_sgt_garch_optimization(
                                        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
 
     logger.info(f"Done DCC-GARCH optimization.")
+
+    with open(savepath, "wb") as f:
+        pickle.dump(params_dcc_sgt_garch, f)
+        logger.info(f"Saved DCC estimations to {str(savepath)}")
+
     return neg_loglik_optval, params_dcc_sgt_garch
 
 
