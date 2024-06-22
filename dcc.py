@@ -1202,6 +1202,75 @@ def _objfun_dcc_loglik(
 #
 #     return x0
 
+def _projection_unit_simplex(x: jnp.ndarray) -> jnp.ndarray:
+  """Projection onto the unit simplex."""
+  s = 1.0
+  n_features = x.shape[0]
+  u = jnp.sort(x)[::-1]
+  cumsum_u = jnp.cumsum(u)
+  ind = jnp.arange(n_features) + 1
+  cond = s / ind + (u - cumsum_u / ind) > 0
+  idx = jnp.count_nonzero(cond)
+  return jax.nn.relu(s / idx + (x - cumsum_u[idx - 1] / idx))
+
+def projection_simplex(x: jnp.ndarray, value: float = 1.0) -> jnp.ndarray:
+  r"""Projection onto a simplex:
+
+  .. math::
+
+    \underset{p}{\text{argmin}} ~ ||x - p||_2^2 \quad \textrm{subject to} \quad
+    p \ge 0, p^\top 1 = \text{value}
+
+  By default, the projection is onto the probability simplex.
+
+  Args:
+    x: vector to project, an array of shape (n,).
+    value: value p should sum to (default: 1.0).
+  Returns:
+    projected vector, an array with the same shape as ``x``.
+  """
+  if value is None:
+    value = 1.0
+  return value * _projection_unit_simplex(x / value)
+
+def projection_l1_sphere(x: jnp.ndarray, value: float = 1.0) -> jnp.ndarray:
+  r"""Projection onto the l1 sphere:
+
+  .. math::
+
+    \underset{y}{\text{argmin}} ~ ||x - y||_2^2 \quad \textrm{subject to} \quad
+    ||y||_1 = \text{value}
+
+  Args:
+    x: array to project.
+    value: radius of the sphere.
+
+  Returns:
+    output array, with the same shape as ``x``.
+  """
+  return jnp.sign(x) * projection_simplex(jnp.abs(x), value)
+
+def projection_l1_ball(x: jnp.ndarray, max_value: float = 1.0) -> jnp.ndarray:
+  r"""Projection onto the l1 ball:
+
+  .. math::
+
+    \underset{y}{\text{argmin}} ~ ||x - y||_2^2 \quad \textrm{subject to} \quad
+    ||y||_1 \le \text{max_value}
+
+  Args:
+    x: array to project.
+    max_value: radius of the ball.
+
+  Returns:
+    output array, with the same structure as ``x``.
+  """
+  l1_norm = jax.numpy.linalg.norm(x, ord=1)
+  return jax.lax.cond(l1_norm <= max_value,
+                      lambda _: x,
+                      lambda _: projection_l1_sphere(x, max_value),
+                      operand=None)
+
 
 def build_estimation_step(optimizer: optax.GradientTransformation, loss_fn : tp.Callable[[jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]]):
     """
@@ -1225,7 +1294,7 @@ def fit(optimizer : optax.GradientTransformation,
         make_params_from_arr,
         dim : int,
         numiter : int,
-        projection : None | tp.Callable[[jpt.PyTree], jpt.PyTree] = None
+        lst_projection : None | tp.List[tp.Callable[[jpt.PyTree], jpt.PyTree]] = None
         ) -> ParamsDccSgtGarch:
     """
     Fit
@@ -1237,8 +1306,10 @@ def fit(optimizer : optax.GradientTransformation,
 
     for _ in range(numiter):
         x, opt_state, params_dcc_sgt_garch = train_step(x, opt_state, params_dcc_sgt_garch)
-        if projection is not None:
-            x = projection(x)
+
+        if lst_projection is not None:
+            for projection in lst_projection:
+                x = projection(x)
 
         # Special treatment in handling the estimate of
         # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
@@ -1360,22 +1431,17 @@ def dcc_sgt_garch_optimization(
     #     jit = jit
     # )
     
-    start_learning_rate = 1e-1
-
     learning_rate_schedule = optax.piecewise_constant_schedule(init_value = 1.0,
                                                                boundaries_and_scales= {0: 1e-4, 1: 1e-1}
                                                                )
 
-    optimizer_z = optax.adam(start_learning_rate)
-    optimizer_mean = optax.adam(start_learning_rate)
-    optimizer_dcc_uvar_vol = optax.adam(start_learning_rate)
-    optimizer_dcc_mvar_cor = optax.adam(start_learning_rate)
+    start_learning_rate = 1e-1
 
 
     projection_strictly_positive = lambda x : optax.projections.projection_box(x, lower = 1e-3, upper = jnp.inf)
     projection_hypercube = lambda x : optax.projections.projection_box(x, lower = 0, upper = 1)
 
-
+    learning_schedule = optax.exponential_decay(init_value = start_learning_rate, transition_steps=grand_maxiter, decay_rate=1e-1)
 
 
     #################################################################
@@ -1383,6 +1449,13 @@ def dcc_sgt_garch_optimization(
     #################################################################
     neg_loglik_optval = None
     for iter in range(grand_maxiter):
+        # Init optimizers
+        learning_rate = float(learning_schedule(iter))
+        optimizer_z = optax.adam(learning_rate)
+        optimizer_mean = optax.adam(learning_rate)
+        optimizer_dcc_uvar_vol = optax.adam(learning_rate)
+        optimizer_dcc_mvar_cor = optax.adam(learning_rate)
+
         #################################################################
         ## Step 1: Optimize for the parameters of z_t
         #################################################################
@@ -1438,7 +1511,7 @@ def dcc_sgt_garch_optimization(
                                    make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
                                    dim = dim,
                                    numiter = inner_maxiter,
-                                   projection=projection_strictly_positive)
+                                   lst_projection=[projection_strictly_positive])
         neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
                                             params_dcc_sgt_garch=params_dcc_sgt_garch,
                                             inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
@@ -1462,11 +1535,12 @@ def dcc_sgt_garch_optimization(
                                    make_params_from_arr= __make_params_from_arr_dcc_mvar_cor,
                                    dim = dim,
                                    numiter = inner_maxiter,
-                                   projection=projection_hypercube)
+                                   lst_projection=[projection_hypercube, projection_l1_ball])
         neg_loglik_val_end = dcc_sgt_loglik(mat_returns=mat_returns,
                                             params_dcc_sgt_garch=params_dcc_sgt_garch,
                                             inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch)
         logger.info(f"..... {iter}/{grand_maxiter}: Step 4/4 --- Optimize multivariate DCC Q_t params. Objective function value changed from {neg_loglik_val_beg} to {neg_loglik_val_end}.")
+
 
 
     # Record the value of the last negative log-likelihood
