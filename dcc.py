@@ -720,6 +720,7 @@ def _calc_trajectory_innovations_timevarying_pq(
     return mat
 
 
+@jit
 def calc_trajectories(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -1301,7 +1302,7 @@ def dcc_sgt_garch_optimization(
     solver_mean : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_uvar_vol : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_mvar_cor : tp.Callable[..., optax.GradientTransformation]=optax.adam,
-    start_learning_rate  : float = 1e-1,
+    start_learning_rate  : float = 1e-2,
 ):
     """
     Run DCC-SGT-GARCH optimization
