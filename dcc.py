@@ -53,8 +53,8 @@ from sgt import ParamsZSgt, SimulatedInnovations, loglik_mvar_timevarying_sgt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
-#jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-#jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
+jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 @chex.dataclass
 class ParamsMean:
@@ -535,13 +535,31 @@ def _calc_trajectory_uvar_vol(
     num_sample = mat_epsilon.shape[0]
     dim = mat_epsilon.shape[1]
 
-    mat_sigma = jnp.empty(shape=(num_sample, dim))
-    mat_sigma = mat_sigma.at[0].set(vec_sigma_init_t0)
+    # mat_sigma = jnp.empty(shape=(num_sample, dim))
+    # mat_sigma = mat_sigma.at[0].set(vec_sigma_init_t0)
+    #
+    # def _body_fun(tt, mat_sigma):
+    #     vec_sigma_t_minus_1 = mat_sigma[tt - 1, :]
+    #     vec_epsilon_t_minus_1 = mat_epsilon[tt - 1, :]
+    #
+    #     vec_sigma2_t = _calc_asymmetric_garch_sigma2(
+    #         vec_sigma_t_minus_1=vec_sigma_t_minus_1,
+    #         vec_epsilon_t_minus_1=vec_epsilon_t_minus_1,
+    #         vec_omega=vec_omega,
+    #         vec_beta=vec_beta,
+    #         vec_alpha=vec_alpha,
+    #         vec_psi=vec_psi,
+    #     )
+    #     vec_sigma_t = jnp.sqrt(vec_sigma2_t)
+    #
+    #     mat_sigma = mat_sigma.at[tt].set(vec_sigma_t)
+    #     return mat_sigma
+    #
+    # mat_sigma = jax.lax.fori_loop(
+    #     lower=1, upper=num_sample, body_fun=_body_fun, init_val=mat_sigma
+    # )
 
-    def _body_fun(tt, mat_sigma):
-        vec_sigma_t_minus_1 = mat_sigma[tt - 1, :]
-        vec_epsilon_t_minus_1 = mat_epsilon[tt - 1, :]
-
+    def gummy(vec_sigma_t_minus_1, vec_epsilon_t_minus_1):
         vec_sigma2_t = _calc_asymmetric_garch_sigma2(
             vec_sigma_t_minus_1=vec_sigma_t_minus_1,
             vec_epsilon_t_minus_1=vec_epsilon_t_minus_1,
@@ -551,15 +569,16 @@ def _calc_trajectory_uvar_vol(
             vec_psi=vec_psi,
         )
         vec_sigma_t = jnp.sqrt(vec_sigma2_t)
+        return vec_sigma_t, vec_sigma_t
 
-        mat_sigma = mat_sigma.at[tt].set(vec_sigma_t)
-        return mat_sigma
-
-    mat_sigma = jax.lax.fori_loop(
-        lower=1, upper=num_sample, body_fun=_body_fun, init_val=mat_sigma
-    )
+    _, mat_sigma = jax.lax.scan(gummy, init = vec_sigma_init_t0, xs = mat_epsilon[1:, :])
+    mat_sigma = jnp.insert(arr = mat_sigma, obj = 0, values = vec_sigma_init_t0, axis = 0)
 
     return mat_sigma
+
+
+
+
 
 
 def _calc_trajectory_mvar_cov(
@@ -619,13 +638,57 @@ def _calc_trajectory_mvar_cov(
 
         return mat_u, tns_Q, tns_Sigma
 
-    carry = jax.lax.fori_loop(
-        lower=1,
-        upper=num_sample,
-        body_fun=_body_fun,
-        init_val=(mat_u, tns_Q, tns_Sigma),
-    )
-    _, _, tns_Sigma = carry
+    # # HACK:
+    # carry = jax.lax.fori_loop(
+    #     lower=1,
+    #     upper=num_sample,
+    #     body_fun=_body_fun,
+    #     init_val=(mat_u, tns_Q, tns_Sigma),
+    # )
+    # # _, _, tns_Sigma = carry
+    # mat_u, tns_Q, tns_Sigma = carry
+
+    def gummy(carry, xs):
+        vec_sigma_t, vec_epsilon_t = xs
+        vec_u_t_minus_1, mat_Q_t_minus_1, _ = carry
+
+        # Compute Q_t
+        mat_Q_t = _calc_mat_Q(
+            vec_delta=vec_delta,
+            vec_u_t_minus_1=vec_u_t_minus_1,
+            mat_Q_t_minus_1=mat_Q_t_minus_1,
+            mat_Qbar=mat_Qbar,
+        )
+
+        # Compute Gamma_t
+        mat_Gamma_t = _calc_mat_Gamma(mat_Q=mat_Q_t)
+
+        # Compute \Sigma_t
+        mat_Sigma_t = _calc_mat_Sigma(vec_sigma=vec_sigma_t, mat_Gamma=mat_Gamma_t)
+
+        # Compute u_t
+        vec_u_t = _calc_normalized_unexpected_excess_rtn(
+            vec_sigma=vec_sigma_t, vec_epsilon=vec_epsilon_t
+        )
+
+        carry = (vec_u_t, mat_Q_t, mat_Sigma_t)
+        return carry, carry
+
+    _, carry = jax.lax.scan(gummy, init = (vec_u_0, mat_Q_0, mat_Sigma_0), xs = (mat_sigma[1:, :], mat_epsilon[1:, :]))
+    arr_u = carry[0]
+    arr_Q = carry[1]
+    arr_Sigma = carry[2]
+
+    arr_u = jnp.insert(arr_u, 0, vec_u_0, axis = 0)
+    arr_Q = jnp.insert(arr_Q, 0, mat_Q_0, axis = 0)
+    arr_Sigma = jnp.insert(arr_Sigma, 0, mat_Sigma_0, axis = 0)
+
+    # HACK:
+    tns_Sigma = arr_Sigma
+
+    # jnp.all(jnp.equal(arr_u, mat_u))
+    # jnp.all(jnp.equal(arr_Q, tns_Q))
+    # jnp.all(jnp.equal(arr_Sigma, tns_Sigma))
 
     return tns_Sigma
 
@@ -720,7 +783,6 @@ def _calc_trajectory_innovations_timevarying_pq(
     return mat
 
 
-@jit
 def calc_trajectories(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -927,7 +989,7 @@ def _simulate_returns(
     return simreturns
 
 
-@jit
+# @jit
 def dcc_sgt_loglik(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
