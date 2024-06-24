@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(
     filename=f"logs/{current_time}_dcc.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(levelname)s | %(asctime)s | %(message)s",
     filemode="w",
 )
@@ -595,9 +595,9 @@ def _calc_trajectory_mvar_cov(
     num_sample = mat_epsilon.shape[0]
     dim = mat_epsilon.shape[1]
 
-    mat_u = jnp.empty(shape=(num_sample, dim))
-    tns_Q = jnp.empty(shape=(num_sample, dim, dim))
-    tns_Sigma = jnp.empty(shape=(num_sample, dim, dim))
+    # mat_u = jnp.empty(shape=(num_sample, dim))
+    # tns_Q = jnp.empty(shape=(num_sample, dim, dim))
+    # tns_Sigma = jnp.empty(shape=(num_sample, dim, dim))
 
     vec_u_0 = _calc_normalized_unexpected_excess_rtn(
         vec_sigma=mat_sigma[0, :], vec_epsilon=mat_epsilon[0, :]
@@ -605,9 +605,9 @@ def _calc_trajectory_mvar_cov(
     mat_Gamma_0 = _calc_mat_Gamma(mat_Q=mat_Q_0)
     mat_Sigma_0 = _calc_mat_Sigma(vec_sigma=mat_sigma[0, :], mat_Gamma=mat_Gamma_0)
 
-    mat_u = mat_u.at[0].set(vec_u_0)
-    tns_Q = tns_Q.at[0].set(mat_Q_0)
-    tns_Sigma = tns_Sigma.at[0].set(mat_Sigma_0)
+    # mat_u = mat_u.at[0].set(vec_u_0)
+    # tns_Q = tns_Q.at[0].set(mat_Q_0)
+    # tns_Sigma = tns_Sigma.at[0].set(mat_Sigma_0)
 
     def _body_fun(tt, carry):
         mat_u, tns_Q, tns_Sigma = carry
