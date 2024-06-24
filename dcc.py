@@ -1245,8 +1245,6 @@ def build_estimation_step(optimizer: optax.GradientTransformation, loss_fn : tp.
     """
     Builds a function for executing a single step in the optimization
     """
-
-    @jit
     def _update(x, opt_state, params_dcc_sgt_garch):
         grads, params_dcc_sgt_garch = jax.grad(loss_fn, has_aux=True)(x, params_dcc_sgt_garch)
         updates, opt_state = optimizer.update(grads, opt_state)
