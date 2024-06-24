@@ -927,6 +927,7 @@ def _simulate_returns(
     return simreturns
 
 
+@jit
 def dcc_sgt_loglik(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
