@@ -56,7 +56,7 @@ from sgt import ParamsZSgt, SimulatedInnovations, loglik_mvar_timevarying_sgt
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
 jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
-jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 # jax.config.update("jax_disable_jit", True) # Should disable in full prod
 
 @chex.dataclass
@@ -896,7 +896,7 @@ def _simulate_returns(
     return simreturns
 
 
-# @jit
+@jit
 def dcc_sgt_loglik(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -1270,7 +1270,7 @@ def dcc_sgt_garch_optimization(
     solver_mean : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_uvar_vol : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_mvar_cor : tp.Callable[..., optax.GradientTransformation]=optax.adam,
-    start_learning_rate  : float = 1e-2,
+    start_learning_rate  : float = 1e-3,
 ):
     """
     Run DCC-SGT-GARCH optimization
@@ -1312,6 +1312,7 @@ def dcc_sgt_garch_optimization(
 
     # Note special treatmeant here for updating DCC Q_t 
     # parameters
+    @jit
     def __make_params_from_arr_dcc_mvar_cor(x : jpt.Array, dim : int, params_dcc_sgt_garch : ParamsDccSgtGarch): 
         return _make_params_from_arr_dcc_mvar_cor(x = x,
                                                   dim = dim,
