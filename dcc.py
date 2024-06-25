@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(
     filename=f"logs/{current_time}_dcc.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
     filemode="w",
 )
@@ -690,6 +690,7 @@ def _calc_trajectory_innovations_timevarying_pq(
     return mat
 
 
+@jit
 def calc_trajectories(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -977,19 +978,19 @@ def _make_params_from_arr_z_sgt(x : jpt.Array, dim : int) -> sgt.ParamsZSgt:
     Take a vector x and split them into parameters related to the
     time-varying SGT process
     """
-    try:
-        if (
-            jnp.size(x)
-            != sgt.NUM_LBDA_TVPARAMS * dim
-            + sgt.NUM_P0_TVPARAMS * dim
-            + sgt.NUM_Q0_TVPARAMS * dim
-        ):
-            raise ValueError(
-                "Incorrect total number of parameters for time-varying SGT innovations specification"
-            )
-    except Exception as e:
-        logger.error(str(e))
-        raise
+    # try:
+    #     if (
+    #         jnp.size(x)
+    #         != sgt.NUM_LBDA_TVPARAMS * dim
+    #         + sgt.NUM_P0_TVPARAMS * dim
+    #         + sgt.NUM_Q0_TVPARAMS * dim
+    #     ):
+    #         raise ValueError(
+    #             "Incorrect total number of parameters for time-varying SGT innovations specification"
+    #         )
+    # except Exception as e:
+    #     logger.error(str(e))
+    #     raise
 
     # NOTE: Must be organized in alphabetical order
     mat_lbda_tvparams = x[0 : (sgt.NUM_LBDA_TVPARAMS * dim)].reshape(
@@ -1017,14 +1018,14 @@ def _make_params_from_arr_mean(x : jpt.Array, dim : int) -> ParamsMean:
     Take a vector x and split them into parameters related to the
     mean \\mu
     """
-    try:
-        if jnp.size(x) != dim:
-            raise ValueError(
-                "Total number of parameters for the constant mean process is incorrect."
-            )
-    except Exception as e:
-        logger.error(str(e))
-        raise
+    # try:
+    #     if jnp.size(x) != dim:
+    #         raise ValueError(
+    #             "Total number of parameters for the constant mean process is incorrect."
+    #         )
+    # except Exception as e:
+    #     logger.error(str(e))
+    #     raise
 
     params_mean = ParamsMean(vec_mu=x)
     return params_mean
@@ -1045,6 +1046,7 @@ def _make_params_from_arr_dcc_uvar_vol(x : jpt.Array, dim :int) -> ParamsUVarVol
     return params_uvar_vol
 
 
+@jit
 def _make_params_from_arr_dcc_mvar_cor(
     x : jpt.Array,
     dim : int,
@@ -1056,14 +1058,14 @@ def _make_params_from_arr_dcc_mvar_cor(
     Take a vector x and split them into parameters related to the
     DCC Q_t process.
     """
-    try:
-        if jnp.size(x) != 2:
-            raise ValueError(
-                "Total number of parameters for the DCC process is incorrect."
-            )
-    except Exception as e:
-        logger.error(str(e))
-        raise
+    # try:
+    #     if jnp.size(x) != 2:
+    #         raise ValueError(
+    #             "Total number of parameters for the DCC process is incorrect."
+    #         )
+    # except Exception as e:
+    #     logger.error(str(e))
+    #     raise
 
     vec_delta = x
 
@@ -1081,12 +1083,12 @@ def _make_params_from_arr_dcc_mvar_cor(
     tens_uuT = _func(mat_u, mat_u)
     mat_Qbar = tens_uuT.mean(axis=0)
 
-    try:
-        if mat_Qbar.shape != (dim, dim):
-            raise ValueError("Shape of estimated \\bar{Q} is incorrect.")
-    except Exception as e:
-        logger.error(str(e))
-        raise
+    # try:
+    #     if mat_Qbar.shape != (dim, dim):
+    #         raise ValueError("Shape of estimated \\bar{Q} is incorrect.")
+    # except Exception as e:
+    #     logger.error(str(e))
+    #     raise
 
     params_mvar_cor = ParamsMVarCor(vec_delta=vec_delta, mat_Qbar=mat_Qbar)
     return params_mvar_cor
