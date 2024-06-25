@@ -35,7 +35,9 @@ logging.basicConfig(
 )
 
 
-seed = 987654321
+# seed = 987654321
+# seed = 202406251109
+seed = 12345
 key = random.key(seed)
 rng = np.random.default_rng(seed)
 num_cores = 8

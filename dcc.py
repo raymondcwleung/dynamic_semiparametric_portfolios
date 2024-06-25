@@ -26,11 +26,13 @@ from datetime import datetime
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    filename=f"logs/{current_time}_dcc.log",
     datefmt="%Y-%m-%d %I:%M:%S %p",
     level=logging.INFO,
     format="%(levelname)s | %(asctime)s | %(message)s",
-    filemode="w",
+    handlers=[
+        logging.FileHandler(f"logs/{current_time}_dcc.log", mode="w"),
+        logging.StreamHandler(),
+    ],
 )
 
 
@@ -405,7 +407,8 @@ def simulate_dcc(
     """
     Simulate a DCC model
     """
-    logger.info("Begin DCC simulation.")
+    num_sample = jnp.shape(data_z)[0]
+    dim = jnp.shape(data_z)[1]
 
     vec_omega = params_dcc_true.uvar_vol.vec_omega
     vec_beta = params_dcc_true.uvar_vol.vec_beta
@@ -418,8 +421,7 @@ def simulate_dcc(
     mat_Sigma_init_t0 = inittimecond_dcc.mat_Sigma_init_t0
     mat_Q_init_t0 = inittimecond_dcc.mat_Q_init_t0
 
-    num_sample = jnp.shape(data_z)[0]
-    dim = jnp.shape(data_z)[1]
+    logger.info(f"Begin DCC simulation on num_sample = {num_sample} and dim = {dim}")
 
     # Initial conditions at t = 0
     vec_z_0 = data_z[0, :]
@@ -690,7 +692,6 @@ def _calc_trajectory_innovations_timevarying_pq(
     return mat
 
 
-@jit
 def calc_trajectories(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -1046,7 +1047,6 @@ def _make_params_from_arr_dcc_uvar_vol(x : jpt.Array, dim :int) -> ParamsUVarVol
     return params_uvar_vol
 
 
-@jit
 def _make_params_from_arr_dcc_mvar_cor(
     x : jpt.Array,
     dim : int,
@@ -1267,19 +1267,21 @@ def dcc_sgt_garch_optimization(
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
     savepath : os.PathLike,
     grand_maxiter: int = 20,
-    inner_maxiter: int = 5,
+    inner_maxiter: int = 10,
+    # learning_schedule: optax.Schedule = optax.constant_schedule(1e-2),
+    learning_schedule = optax.linear_schedule(init_value = 1e-2, end_value = 1e-5, transition_steps=10),
     solver_z : tp.Callable[..., optax.GradientTransformation] =optax.adam,
     solver_mean : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_uvar_vol : tp.Callable[..., optax.GradientTransformation]=optax.adam,
     solver_dcc_mvar_cor : tp.Callable[..., optax.GradientTransformation]=optax.adam,
-    start_learning_rate  : float = 1e-3,
 ):
     """
     Run DCC-SGT-GARCH optimization
     """
-    logger.info(f"Begin DCC-SGT-GARCH optimization.")
-
+    num_sample = mat_returns.shape[0]
     dim = mat_returns.shape[1]
+
+    logger.info(f"Begin DCC-SGT-GARCH optimization on num_sample = {num_sample} and dim = {dim}")
 
     #################################################################
     ## Setup partial objective functions
@@ -1335,8 +1337,7 @@ def dcc_sgt_garch_optimization(
     # Set the projections (i.e. serve as parameter optimization constraints)
     projection_strictly_positive = lambda x : optax.projections.projection_box(x, lower = 1e-3, upper = jnp.inf)
     projection_hypercube = lambda x : optax.projections.projection_box(x, lower = 0, upper = 1)
-
-    learning_schedule = optax.exponential_decay(init_value = start_learning_rate, transition_steps=grand_maxiter, decay_rate=1e-1)
+    
 
 
     #################################################################
