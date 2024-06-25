@@ -652,40 +652,20 @@ def _calc_trajectory_innovations(
 def _calc_trajectory_innovations_timevarying_lbda(
     mat_lbda_tvparams: jpt.Float[jpt.Array, "NUM_LBDA_TVPARAMS dim"],
     mat_z: jpt.Float[jpt.Array, "num_sample dim"],
-    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],
-) -> jpt.Float[jpt.Array, "num_sample dim"]:
+    vec_lbda_init_t0: jpt.Float[jpt.Array, "dim"],) -> jpt.Float[jpt.Array, "num_sample dim"]:
     """
     Calculate the time-varying \\lambda_t parameters associated with the
     innovations z_t
     """
-    num_sample = mat_z.shape[0]
-    dim = mat_z.shape[1]
-
-    mat_lbda = jnp.empty(shape=(num_sample, dim))
-    mat_lbda = mat_lbda.at[0].set(vec_lbda_init_t0)
-
-    _func = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
-    def _body_fun(tt, mat_lbda):
-        vec_lbda_t = _func(mat_lbda_tvparams, mat_lbda[tt - 1], mat_z[tt - 1, :])
-        mat_lbda = mat_lbda.at[tt].set(vec_lbda_t)
-        return mat_lbda
-
-    mat_lbda = jax.lax.fori_loop(
-        lower=1, upper=num_sample, body_fun=_body_fun, init_val=mat_lbda
-    )
-
-
-    _func = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
-    def gummy(vec_lbda_t_minus_1, vec_z_t_minus_1):
-        vec_lbda_t = _func(mat_lbda_tvparams, vec_lbda_t_minus_1, vec_z_t_minus_1)
+    _vectorize_fun = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
+    def _func(vec_lbda_t_minus_1, vec_z_t_minus_1):
+        vec_lbda_t = _vectorize_fun(mat_lbda_tvparams, vec_lbda_t_minus_1, vec_z_t_minus_1)
         return vec_lbda_t, vec_lbda_t
 
-    _, arr_lbda = jax.lax.scan(gummy, init = vec_lbda_init_t0, xs = mat_z[1:, :])
-    arr_lbda = jnp.insert(arr_lbda, 0, vec_lbda_init_t0, axis = 0)
+    _, mat_lbda = jax.lax.scan(_func, init = vec_lbda_init_t0, xs = mat_z)
+    mat_lbda = jnp.insert(mat_lbda, 0, vec_lbda_init_t0, axis = 0)
+    mat_lbda = jnp.delete(mat_lbda, -1, axis = 0)
 
-    jnp.equal(arr_lbda, mat_lbda)
-
-    breakpoint()
     return mat_lbda
 
 
@@ -698,19 +678,15 @@ def _calc_trajectory_innovations_timevarying_pq(
     Calculate the time-varying p_t or q_t parameters associated with the
     innovations z_t
     """
-    num_sample = mat_z.shape[0]
-    dim = mat_z.shape[1]
+    _vectorize_fun = vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
+    def _func(vec_pq_t_minus_1, vec_z_t_minus_1):
+        vec_pq_t = _vectorize_fun(mat_pq_tvparams, vec_pq_t_minus_1, vec_z_t_minus_1)
+        return vec_pq_t, vec_pq_t
 
-    mat = jnp.empty(shape=(num_sample, dim))
-    mat = mat.at[0].set(vec_pq_init_t0)
+    _, mat = jax.lax.scan(_func, init = vec_pq_init_t0, xs = mat_z)
+    mat = jnp.insert(mat, 0, vec_pq_init_t0, axis = 0)
+    mat = jnp.delete(mat, -1, axis = 0)
 
-    _func = vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
-    def _body_fun(tt, mat_pq):
-        vec_pq_t = _func(mat_pq_tvparams, mat_pq[tt - 1], mat_z[tt - 1, :])
-        mat_pq = mat_pq.at[tt].set(vec_pq_t)
-        return mat_pq
-
-    mat = jax.lax.fori_loop(lower=1, upper=num_sample, body_fun=_body_fun, init_val=mat)
     return mat
 
 

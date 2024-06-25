@@ -561,8 +561,10 @@ def _time_varying_pq_params(
         # param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
         param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
 
-        param_t = jnp.max(jnp.array([theta_bar, param_t]))
-
+        # TODO: Think about this spec?
+        # param_t = jnp.max(jnp.array([theta_bar, param_t]))
+        
+        param_t = theta_bar + param_t
 
     except FloatingPointError as e:
         # Floating point error most likely in the log(.) calculation

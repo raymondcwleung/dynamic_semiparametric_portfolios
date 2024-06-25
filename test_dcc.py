@@ -10,6 +10,7 @@ import os
 import pathlib
 
 import dcc
+import sgt
 
 
 jax.config.update("jax_default_device", jax.devices("cpu")[0]) # CPU is fine
@@ -22,6 +23,15 @@ class TestDCC:
 
     num_sample = pd.read_excel(test_data, sheet_name="num_sample", header = None).values.item()
     dim = pd.read_excel(test_data, sheet_name="dim", header = None).values.item()
+
+    mat_lbda_tvparams = jnp.array(pd.read_excel(test_data, sheet_name="mat_lbda_tvparams", header = None).values)
+    mat_p0_tvparams = jnp.array(pd.read_excel(test_data, sheet_name="mat_p0_tvparams", header = None).values)
+    mat_z = jnp.array(pd.read_excel(test_data, sheet_name="mat_z", header = None).values)
+    mat_p0 = jnp.array(pd.read_excel(test_data, sheet_name="mat_p0", header = None).values)
+    vec_lbda_init_t0 = jnp.array(pd.read_excel(test_data, sheet_name="vec_lbda_init_t0", header = None).values).reshape(dim, )
+    vec_p0_init_t0 = jnp.array(pd.read_excel(test_data, sheet_name="vec_p0_init_t0", header = None).values).reshape(dim, )
+
+    mat_lbda = jnp.array(pd.read_excel(test_data, sheet_name="mat_lbda", header = None).values)
 
     mat_epsilon = jnp.array(pd.read_excel(test_data, sheet_name="mat_epsilon", header = None).values)
     mat_sigma = jnp.array(pd.read_excel(test_data, sheet_name="mat_sigma", header = None).values)
@@ -168,6 +178,76 @@ class TestDCC:
         calc_tns_Sigma = dcc._calc_trajectory_mvar_cov(mat_epsilon=mat_epsilon, mat_sigma = mat_sigma, mat_Q_0=mat_Q_0, vec_delta = vec_delta, mat_Qbar=mat_Qbar)
         assert jnp.allclose(calc_tns_Sigma, tns_Sigma)
 
+    def test_calc_trajectory_innovations_timevarying_lbda_precomputed(self) -> None:
+        mat_lbda_tvparams = self.mat_lbda_tvparams
+        mat_z = self.mat_z
+        vec_lbda_init_t0 = self.vec_lbda_init_t0
+        mat_lbda = self.mat_lbda
+
+        num_sample = mat_z.shape[0]
+        dim = mat_z.shape[1]
+
+        calc_mat_lbda = jnp.empty(shape=(num_sample, dim))
+        calc_mat_lbda = calc_mat_lbda.at[0].set(vec_lbda_init_t0)
+
+        _func = jax.vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
+        def _body_fun(tt, mat_lbda):
+            vec_lbda_t = _func(mat_lbda_tvparams, mat_lbda[tt - 1], mat_z[tt - 1, :])
+            mat_lbda = mat_lbda.at[tt].set(vec_lbda_t)
+            return mat_lbda
+
+        calc_mat_lbda = jax.lax.fori_loop(
+            lower=1, upper=num_sample, body_fun=_body_fun, init_val=calc_mat_lbda
+        )
+
+        # Compare against pre-computed results
+        assert jnp.allclose(calc_mat_lbda, mat_lbda)
+
+
+    def test_calc_trajectory_innovations_timevarying_lbda(self) -> None:
+        mat_lbda_tvparams = self.mat_lbda_tvparams
+        mat_z = self.mat_z
+        vec_lbda_init_t0 = self.vec_lbda_init_t0
+        mat_lbda = self.mat_lbda
+
+        calc_mat_lbda = dcc._calc_trajectory_innovations_timevarying_lbda(mat_lbda_tvparams=mat_lbda_tvparams, mat_z = mat_z, vec_lbda_init_t0=vec_lbda_init_t0)
+
+        # Compare against pre-computed results
+        assert jnp.allclose(calc_mat_lbda, mat_lbda)
+
+
+    def test_calc_trajectory_innovations_timevarying_pq_precomputed(self) -> None:
+        mat_p0_tvparams = self.mat_p0_tvparams
+        mat_z = self.mat_z
+        vec_p0_init_t0 = self.vec_p0_init_t0
+        mat_p0 = self.mat_p0
+
+        num_sample = mat_z.shape[0]
+        dim = mat_z.shape[1]
+
+        calc_mat_p0 = jnp.empty(shape=(num_sample, dim))
+        calc_mat_p0 = calc_mat_p0.at[0].set(vec_p0_init_t0)
+
+        _func = jax.vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
+        def _body_fun(tt, mat_pq):
+            vec_pq_t = _func(mat_p0_tvparams, mat_pq[tt - 1], mat_z[tt - 1, :])
+            mat_pq = mat_pq.at[tt].set(vec_pq_t)
+            return mat_pq
+
+        calc_mat_p0 = jax.lax.fori_loop(lower=1, upper=num_sample, body_fun=_body_fun, init_val=calc_mat_p0)
+
+        assert jnp.allclose(calc_mat_p0, mat_p0)
+
+
+    def test_calc_trajectory_innovations_timevarying_pq(self) -> None:
+        mat_p0_tvparams = self.mat_p0_tvparams
+        mat_z = self.mat_z
+        vec_p0_init_t0 = self.vec_p0_init_t0
+        mat_p0 = self.mat_p0
+
+        calc_mat_p0 = dcc._calc_trajectory_innovations_timevarying_pq(mat_pq_tvparams=mat_p0_tvparams, mat_z = mat_z, vec_pq_init_t0=vec_p0_init_t0)
+
+        assert jnp.allclose(calc_mat_p0, mat_p0)
 
 
 
