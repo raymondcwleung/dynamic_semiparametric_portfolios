@@ -558,11 +558,11 @@ def _time_varying_pq_params(
         # Define the transition terms on the RHS
         _rhs = (log(1 + theta[0]) + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1) + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1)))
 
-        param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
-        # param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
+        # param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
+        param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
 
         # TODO: Think about this spec?
-        # param_t = jnp.max(jnp.array([theta_bar, param_t]))
+        param_t = jnp.max(jnp.array([theta_bar, param_t]))
         
 
     except FloatingPointError as e:
