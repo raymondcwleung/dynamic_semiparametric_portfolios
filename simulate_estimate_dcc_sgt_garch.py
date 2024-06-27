@@ -2,7 +2,6 @@ import numpy as np
 
 import time
 import uuid
-import yaml
 import pathlib
 import logging
 from datetime import datetime

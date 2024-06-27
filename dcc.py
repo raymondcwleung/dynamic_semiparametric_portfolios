@@ -1538,7 +1538,8 @@ def dcc_sgt_garch_mle(
             continue
         else:
             logger.warn(f"Reached invalid parameter update at iter = {iter} with learning rate = {learning_rate}")
-            return valid_optimization, neg_loglik_val, params_dcc_sgt_garch
+            estimation_res = EstimationResults(valid_optimization=valid_optimization, neg_loglik_val=neg_loglik_val, params_dcc_sgt_garch=params_dcc_sgt_garch)
+            return estimation_res
 
 
     logger.debug("DCC optimization complete")
@@ -1744,19 +1745,6 @@ def calc_estimation_dcc_sgt_garch(
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
     )
     return estimation_res
-
-
-
-    lst_results = {"valid_optimization" : valid_optimization,
-                   "neg_loglik_val" : neg_loglik_val,
-                   "params_dcc_sgt_garch" : params_dcc_sgt_garch}
-
-    data_simreturns_estimate_savepath = (
-        pathlib.Path().resolve() / f"simulated_data/data_simreturns_timevarying_sgt_estimate_{STR_ID}.pkl"
-    )
-    with open(data_simreturns_estimate_savepath, "wb") as f:
-        pickle.dump(data_simreturns_estimate_savepath, f)
-        logger.info(f"Saved DCC-MLE results to {str(data_simreturns_estimate_savepath)}")
 
 
 
