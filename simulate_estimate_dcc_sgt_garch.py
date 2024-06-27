@@ -52,6 +52,11 @@ logging.basicConfig(
     ],
 )
 
+# Simulate returns
+logger.info(f"Begin simulation")
+simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
+logger.info(f"End simulation")
+
 sim = 0
 while sim < num_simulations:
     # Setup
@@ -64,11 +69,6 @@ while sim < num_simulations:
         f"--- Scenario iter {sim}/{num_simulations} num_sample = {num_sample} and dim = {dim} ---"
     )
     beg_time = time.perf_counter()
-
-    # Simulate returns
-    logger.info(f"Begin simulation")
-    simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
-    logger.info(f"End simulation")
 
     # Estimate parameters
     logger.info(f"Begin estimation")
