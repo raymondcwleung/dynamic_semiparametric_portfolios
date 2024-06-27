@@ -64,7 +64,10 @@ for sim in range(num_simulations):
     if estimation_res.valid_optimization:
         neg_loglik_val = np.array(estimation_res.neg_loglik_val)
         dict_res = {"simreturns" : simreturns, "estimation_res" : estimation_res}
-        with open(dir_data_simulations.joinpath(f"{fn}.pkl"), "wb") as f:
+
+        dir = dir_data_simulations.joinpath(f"./numsample{num_sample}_dim{dim}")
+        dir.mkdir(parents=True, exist_ok=True)
+        with open(dir.joinpath(f"{fn}.pkl"), "wb") as f:
             pickle.dump(dict_res, f)
 
         logger.info(f"End estimation with at value {neg_loglik_val}")
