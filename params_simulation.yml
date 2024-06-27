@@ -1,0 +1,5 @@
+---
+num_simulations : 100
+lst_num_sample : [100, 300, 500]
+lst_dim : [2, 5]
+

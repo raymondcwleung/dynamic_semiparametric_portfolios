@@ -42,15 +42,15 @@ import utils
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    filename="sgt.log",
-    datefmt="%Y-%m-%d %I:%M:%S %p",
-    level=logging.INFO,
-    format="%(levelname)s | %(asctime)s | %(message)s",
-    filemode="w",
-)
-
-
+# logging.basicConfig(
+#     filename="sgt.log",
+#     datefmt="%Y-%m-%d %I:%M:%S %p",
+#     level=logging.INFO,
+#     format="%(levelname)s | %(asctime)s | %(message)s",
+#     filemode="w",
+# )
+#
+#
 RUN_TIMEVARYING_SGT_SIMULATIONS = True
 NUM_LBDA_TVPARAMS = 3
 NUM_P0_TVPARAMS = 3
@@ -644,7 +644,7 @@ def sample_mvar_timevarying_sgt(
 
         return mat_lbda, mat_p0, mat_q0, mat_z
 
-    logger.info(f"Begin time-varying SGT simulation")
+    logger.debug(f"Begin time-varying SGT simulation")
 
     carry = (mat_lbda, mat_p0, mat_q0, mat_z)
     for tt in range(1, num_sample):
@@ -655,7 +655,7 @@ def sample_mvar_timevarying_sgt(
 
     data_mat_lbda, data_mat_p0, data_mat_q0, data_mat_z = carry
 
-    logger.info(f"Done time-varying SGT simulation")
+    logger.debug(f"Done time-varying SGT simulation")
 
     siminnov = SimulatedInnovations(
         num_sample=num_sample,
