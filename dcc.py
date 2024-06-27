@@ -274,6 +274,7 @@ class SimulatedReturns:
     ################################################################
     ## Parameters
     ################################################################
+    params_mean_true : ParamsMean
     params_dcc_true: ParamsDcc
 
     ################################################################
@@ -931,6 +932,7 @@ def _simulate_returns(
         dim=dim,
         num_sample=num_sample,
         siminnov=siminnov,
+        params_mean_true=params_mean_true,
         params_dcc_true=params_dcc_true,
         data_mat_epsilon=data_mat_epsilon,
         data_mat_sigma=data_mat_sigma,
