@@ -53,9 +53,24 @@ logging.basicConfig(
 )
 
 # Simulate returns
-logger.info(f"Begin simulation")
-simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
-logger.info(f"End simulation")
+dir = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
+simreturns_fn = dir.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
+
+# Generate simulations if it's not available yet
+if ~simreturns_fn.is_file():
+    logger.info(f"Begin simulation")
+    simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
+
+    with open(simreturns_fn, "wb") as f:
+        pickle.dump(simreturns_fn, f)
+
+    logger.info(f"End simulation")
+
+
+# Load in simulated results
+with open(simreturns_fn, "rb") as f:
+    simreturns = pickle.load(f)
+logger.info(f"Finished loading simulation {simreturns_fn}")
 
 sim = 0
 while sim < num_simulations:
