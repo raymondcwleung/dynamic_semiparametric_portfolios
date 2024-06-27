@@ -62,7 +62,7 @@ if ~simreturns_fn.is_file():
     simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
 
     with open(simreturns_fn, "wb") as f:
-        pickle.dump(simreturns_fn, f)
+        pickle.dump(simreturns, f)
 
     logger.info(f"End simulation")
 
