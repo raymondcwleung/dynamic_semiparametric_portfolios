@@ -1640,8 +1640,6 @@ def gen_simulation_dcc_sgt_garch(
     #################################################################
     ## Simulate DCC-SGT-GARCH
     #################################################################
-    # fn = f"simulated_data/data_simreturns_timevarying_sgt_{str_id}.pkl"
-    # data_simreturns_savepath = pathlib.Path().resolve() / fn
     simreturns = simulate_dcc_sgt_garch(
         seed=seed,
         hashid = hashid,
@@ -1650,7 +1648,6 @@ def gen_simulation_dcc_sgt_garch(
         num_sample=num_sample,
         params_dcc_sgt_garch=params_dcc_sgt_garch_true,
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_true,
-        # data_simreturns_savepath=data_simreturns_savepath,
     )
     return simreturns
 
@@ -1658,10 +1655,11 @@ def gen_simulation_dcc_sgt_garch(
 
 
 def calc_estimation_dcc_sgt_garch(
-    num_sample : int, 
-    dim : int,
-    simreturns : SimulatedReturns,
+        mat_returns : jpt.Float[jpt.Array, "num_sample dim"], 
         seed: int | None = None) -> EstimationResults:
+
+    num_sample = mat_returns.shape[0]
+    dim = mat_returns.shape[1]
 
     if seed is None:
         seed = utils.gen_seed_number()
@@ -1704,7 +1702,6 @@ def calc_estimation_dcc_sgt_garch(
         mat_Qbar=generate_random_cov_mat(key=key, dim=dim),
     )
 
-
     # Package all the initial guess DCC params together
     params_dcc_init_guess = ParamsDcc(
         uvar_vol=params_uvar_vol_init_guess,
@@ -1742,7 +1739,7 @@ def calc_estimation_dcc_sgt_garch(
     ## Maximum likelihood estimation
     #################################################################
     estimation_res = dcc_sgt_garch_mle(
-        mat_returns=simreturns.data_mat_returns,
+        mat_returns=mat_returns,
         guess_params_dcc_sgt_garch=guess_params_dcc_sgt_garch,
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
     )

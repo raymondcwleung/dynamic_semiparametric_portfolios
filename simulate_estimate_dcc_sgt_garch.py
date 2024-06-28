@@ -28,6 +28,14 @@ num_simulations = args.num_simulations
 num_sample = args.num_sample
 dim = args.dim
 
+# Number of additional samples to simulate, so that 
+# the total number of samples generated is 
+# BUFFER_SAMPLE + num_sample. However, we will discard 
+# the initial BUFFER_SAMPLE amount so as to remove the 
+# effects of initial conditions in autoregressive-type 
+# models.
+BUFFER_SAMPLE = 1000
+
 # Directories setup
 dir_log_simulations = pathlib.Path().resolve().joinpath("./logs/simulations/")
 dir_data_simulations = pathlib.Path().resolve().joinpath("./data/simulations/")
@@ -52,14 +60,16 @@ logging.basicConfig(
     ],
 )
 
-# Simulate returns
+#########################################################
+## Step 1: Simulate returns
+#########################################################
 dir = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
 simreturns_fn = dir.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
 
 # Generate simulations if it's not available yet
 if ~simreturns_fn.is_file():
     logger.info(f"Begin simulation")
-    simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample=num_sample, dim=dim)
+    simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample= BUFFER_SAMPLE + num_sample, dim=dim)
 
     with open(simreturns_fn, "wb") as f:
         pickle.dump(simreturns, f)
@@ -72,6 +82,15 @@ with open(simreturns_fn, "rb") as f:
     simreturns = pickle.load(f)
 logger.info(f"Finished loading simulation {simreturns_fn}")
 
+# Truncate the sample so that we are not affected 
+# by the initial conditions of the simulation. Thus the 
+# data shape that enters into estimation is of 
+# (num_sample, dim).
+mat_returns = simreturns.data_mat_returns[BUFFER_SAMPLE:]
+
+#########################################################
+## Step 2: Estimation
+#########################################################
 sim = 0
 while sim < num_simulations:
     # Setup
@@ -87,9 +106,7 @@ while sim < num_simulations:
 
     # Estimate parameters
     logger.info(f"Begin estimation")
-    estimation_res = dcc.calc_estimation_dcc_sgt_garch(
-        num_sample=num_sample, dim=dim, simreturns=simreturns
-    )
+    estimation_res = dcc.calc_estimation_dcc_sgt_garch(mat_returns=mat_returns)
 
     # Save only results where optimization was valid
     if estimation_res.valid_optimization:

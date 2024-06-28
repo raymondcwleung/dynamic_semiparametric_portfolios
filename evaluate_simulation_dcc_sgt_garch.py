@@ -36,7 +36,10 @@ lst_params_mvar_cor = []
 # List files
 dir = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
 lst_files = dir.glob("*.pkl")
-lst_files = list(lst_files)
+
+# Need to chop out the "simreturns_{num_sample}_{dim}.pkl" file
+simreturns_file = dir.glob("simreturns_*.pkl")
+lst_files = list(set(lst_files) - set(simreturns_file))
 
 for fn in lst_files:
     with open(fn, "rb") as f:
