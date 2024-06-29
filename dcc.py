@@ -15,6 +15,8 @@ import os
 import pathlib
 import pickle
 
+import inspect
+
 import uuid
 
 import pandas as pd
@@ -58,8 +60,8 @@ from numpy._typing import NDArray
 import scipy
 import matplotlib.pyplot as plt
 
-import sgt
-from sgt import ParamsZSgt, SimulatedInnovations, loglik_mvar_timevarying_sgt
+import innovations
+from innovations import ParamsZSgt, SimulatedInnovations, SimulatedSGTInnovations, loglik_mvar_timevarying_sgt
 
 # HACK:
 # jax.config.update("jax_default_device", jax.devices("cpu")[0])
@@ -216,18 +218,20 @@ class ParamsModel:
     model, where X depends on the choice of specifications of the
     innovation process z_t.
     """
-
     mean: ParamsMean
     dcc: ParamsDcc
-
 
 @chex.dataclass
 class ParamsDccSgtGarch(ParamsModel):
     """
     Collect all the parameters of a DCC-SGT-GARCH model
     """
+    innov_z: innovations.ParamsZSgt
 
-    sgt: sgt.ParamsZSgt
+
+@chex.dataclass
+class ParamsDccGaussianGarch(ParamsModel):
+    innov_z: innovations.ParamsZGaussian
 
 
 @chex.dataclass
@@ -246,8 +250,12 @@ class InitTimeConditionDcc:
 
 
 @chex.dataclass
-class InitTimeConditionDccSgtGarch:
-    sgt: sgt.InitTimeConditionZSgt
+class InitTimeConditionDccSgtGarch(InitTimeConditionDcc):
+    sgt: innovations.InitTimeConditionZSgt
+    dcc: InitTimeConditionDcc
+
+@chex.dataclass
+class InitTimeConditionDccGaussianGarch(InitTimeConditionDcc):
     dcc: InitTimeConditionDcc
 
 
@@ -269,7 +277,7 @@ class SimulatedReturns:
     ################################################################
     ## Object for the innovations z_t
     ################################################################
-    siminnov: sgt.SimulatedInnovations
+    siminnov: SimulatedInnovations
 
     ################################################################
     ## Parameters
@@ -311,12 +319,8 @@ class EstimationResults:
     # Value of the negative of the log-likelihood.
     neg_loglik_val : jpt.Float
 
-    # Estimated parameters of the DCC-SGT-GARCH model
-    params_dcc_sgt_garch : ParamsDccSgtGarch
-
-
-
-
+    # Estimated parameters of the DCC-distr-GARCH model
+    params_dcc_distr_garch : ParamsModel
 
 
 
@@ -695,7 +699,7 @@ def _calc_trajectory_innovations_timevarying_lbda(
     Calculate the time-varying \\lambda_t parameters associated with the
     innovations z_t
     """
-    _vectorize_fun = vmap(sgt._time_varying_lbda_params, in_axes=[1, 0, 0])
+    _vectorize_fun = vmap(innovations._time_varying_lbda_params, in_axes=[1, 0, 0])
 
     def _func(vec_lbda_t_minus_1, vec_z_t_minus_1):
         vec_lbda_t = _vectorize_fun(
@@ -719,7 +723,7 @@ def _calc_trajectory_innovations_timevarying_pq(
     Calculate the time-varying p_t or q_t parameters associated with the
     innovations z_t
     """
-    _vectorize_fun = vmap(sgt._time_varying_pq_params, in_axes=[1, 0, 0])
+    _vectorize_fun = vmap(innovations._time_varying_pq_params, in_axes=[1, 0, 0])
 
     def _func(vec_pq_t_minus_1, vec_z_t_minus_1):
         vec_pq_t = _vectorize_fun(mat_pq_tvparams, vec_pq_t_minus_1, vec_z_t_minus_1)
@@ -732,15 +736,11 @@ def _calc_trajectory_innovations_timevarying_pq(
     return mat
 
 
-@jit
-def calc_trajectories(
-    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
-    params_dcc_sgt_garch: ParamsDccSgtGarch,
-    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
-) -> tp.Tuple[
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_lbda
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_p0
-    jpt.Float[jpt.Array, "num_sample dim"],  # mat_q0
+# @jit
+def calc_general_trajectories(
+    mat_returns : jpt.Float[jpt.Array, "num_sample dim"],
+    params_dcc_distr_garch : ParamsModel,
+    inittimecond_dcc_distr_garch: InitTimeConditionDcc) -> tp.Tuple[
     jpt.Float[jpt.Array, "num_sample dim"],  # mat_epsilon
     jpt.Float[jpt.Array, "num_sample dim"],  # mat_sigma
     jpt.Float[jpt.Array, "num_sample dim dim"],  # tns_Sigma
@@ -748,30 +748,21 @@ def calc_trajectories(
     jpt.Float[jpt.Array, "num_sample dim"],  # mat_u
 ]:
     """
-    Given parameters, return the trajectories {\\lambda_t}, {p_t}, {q_t},
+    Given parameters, return the trajectories
     {\\epsilon_t}, {\\sigma_{i,t}}, {\\Sigma_t}, {z_t}, {u_t}
     """
-    # Extract the parameters and t = 0 initial conditions
-    mat_lbda_tvparams = params_dcc_sgt_garch.sgt.mat_lbda_tvparams
-    mat_p0_tvparams = params_dcc_sgt_garch.sgt.mat_p0_tvparams
-    mat_q0_tvparams = params_dcc_sgt_garch.sgt.mat_q0_tvparams
+    vec_mu = params_dcc_distr_garch.mean.vec_mu
 
-    vec_mu = params_dcc_sgt_garch.mean.vec_mu
+    vec_omega = params_dcc_distr_garch.dcc.uvar_vol.vec_omega
+    vec_beta = params_dcc_distr_garch.dcc.uvar_vol.vec_beta
+    vec_alpha = params_dcc_distr_garch.dcc.uvar_vol.vec_alpha
+    vec_psi = params_dcc_distr_garch.dcc.uvar_vol.vec_psi
 
-    vec_omega = params_dcc_sgt_garch.dcc.uvar_vol.vec_omega
-    vec_beta = params_dcc_sgt_garch.dcc.uvar_vol.vec_beta
-    vec_alpha = params_dcc_sgt_garch.dcc.uvar_vol.vec_alpha
-    vec_psi = params_dcc_sgt_garch.dcc.uvar_vol.vec_psi
+    vec_delta = params_dcc_distr_garch.dcc.mvar_cor.vec_delta
+    mat_Qbar = params_dcc_distr_garch.dcc.mvar_cor.mat_Qbar
 
-    vec_delta = params_dcc_sgt_garch.dcc.mvar_cor.vec_delta
-    mat_Qbar = params_dcc_sgt_garch.dcc.mvar_cor.mat_Qbar
-
-    vec_lbda_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_lbda_init_t0
-    vec_p0_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_p0_init_t0
-    vec_q0_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_q0_init_t0
-
-    vec_sigma_init_t0 = inittimecond_dcc_sgt_garch.dcc.vec_sigma_init_t0
-    mat_Q_init_t0 = inittimecond_dcc_sgt_garch.dcc.mat_Q_init_t0
+    vec_sigma_init_t0 = inittimecond_dcc_distr_garch.vec_sigma_init_t0
+    mat_Q_init_t0 = inittimecond_dcc_distr_garch.mat_Q_init_t0
 
     # Compute \epsilon_t = R_t - \mu_t
     mat_epsilon = _calc_demean_returns(mat_returns=mat_returns, vec_mu=vec_mu)
@@ -811,6 +802,44 @@ def calc_trajectories(
     )
     logger.debug("End _calc_trajectory_normalized_unexp_returns")
 
+    return mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u
+
+
+# @jit
+def calc_sgt_trajectories(
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    params_dcc_sgt_garch: ParamsDccSgtGarch,
+    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
+) -> tp.Tuple[
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_lbda
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_p0
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_q0
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_epsilon
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_sigma
+    jpt.Float[jpt.Array, "num_sample dim dim"],  # tns_Sigma
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_z
+    jpt.Float[jpt.Array, "num_sample dim"],  # mat_u
+]:
+    """
+    Given parameters, return the trajectories {\\lambda_t}, {p_t}, {q_t},
+    {\\epsilon_t}, {\\sigma_{i,t}}, {\\Sigma_t}, {z_t}, {u_t}
+    """
+    # Extract the parameters and t = 0 initial conditions
+    mat_lbda_tvparams = params_dcc_sgt_garch.innov_z.mat_lbda_tvparams
+    mat_p0_tvparams = params_dcc_sgt_garch.innov_z.mat_p0_tvparams
+    mat_q0_tvparams = params_dcc_sgt_garch.innov_z.mat_q0_tvparams
+
+    vec_lbda_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_lbda_init_t0
+    vec_p0_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_p0_init_t0
+    vec_q0_init_t0 = inittimecond_dcc_sgt_garch.sgt.vec_q0_init_t0
+
+    mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u = calc_general_trajectories(
+        mat_returns = mat_returns, 
+        params_dcc_distr_garch = params_dcc_sgt_garch,
+        inittimecond_dcc_distr_garch = inittimecond_dcc_sgt_garch)
+
+
+
     # Calculate the time-varying parameters \lambda_t
     # associated with the innovations z_t
     logger.debug("Begin _calc_trajectory_innovations_*")
@@ -836,50 +865,12 @@ def calc_trajectories(
     return mat_lbda, mat_p0, mat_q0, mat_epsilon, mat_sigma, tns_Sigma, mat_z, mat_u
 
 
-def simulate_dcc_sgt_garch(
-    seed: int,
-    hashid: str,
-    key: KeyArrayLike,
-    dim: int,
-    num_sample: int,
-    params_dcc_sgt_garch: ParamsDccSgtGarch,
-    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
-    # data_simreturns_savepath: os.PathLike,
-) -> SimulatedReturns:
-    """
-    Simulate DCC-SGT-GARCH.
-    """
-    # Get the simulated innovations z_t
-    siminnov = sgt.sample_mvar_timevarying_sgt(
-        key=key,
-        num_sample=num_sample,
-        params_z_sgt_true=params_dcc_sgt_garch.sgt,
-        inittimecond_z_sgt=inittimecond_dcc_sgt_garch.sgt,
-        save_path=None,
-    )
-
-    # Obtain the simulated asset returns R_t
-    simreturns = _simulate_returns(
-        seed=seed,
-        hashid=hashid,
-        dim=dim,
-        num_sample=num_sample,
-        siminnov=siminnov,
-        params_mean_true=params_dcc_sgt_garch.mean,
-        params_dcc_true=params_dcc_sgt_garch.dcc,
-        inittimecond_dcc=inittimecond_dcc_sgt_garch.dcc,
-        # savepath=data_simreturns_savepath,
-    )
-
-    return simreturns
-
-
 def _simulate_returns(
     seed: int,
     hashid: str,
     dim: int,
     num_sample: int,
-    siminnov: sgt.SimulatedInnovations,
+    siminnov: SimulatedInnovations,
     params_mean_true: ParamsMean,
     params_dcc_true: ParamsDcc,
     inittimecond_dcc: InitTimeConditionDcc,
@@ -948,7 +939,81 @@ def _simulate_returns(
     return simreturns
 
 
-@jit
+
+def simulate_dcc_gaussian_garch(seed : int, 
+                                hashid :str, 
+                                key : KeyArrayLike, 
+                                dim : int, 
+                                num_sample : int, 
+                                params_dcc_gaussian_garch : ParamsDccGaussianGarch,
+                                inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
+                                ) -> SimulatedReturns:
+    """
+    Simulate DCC-Gaussian-GARCH
+    """
+    # Get the simulated innovations z_t
+    siminnov = innovations.sample_mvar_gaussian(
+        key=key,
+        num_sample=num_sample,
+        params_z_gaussian_true=params_dcc_gaussian_garch.innov_z,
+    )
+
+    # Obtain the simulated asset returns R_t
+    simreturns = _simulate_returns(
+        seed=seed,
+        hashid=hashid,
+        dim=dim,
+        num_sample=num_sample,
+        siminnov=siminnov,
+        params_mean_true=params_dcc_gaussian_garch.mean,
+        params_dcc_true=params_dcc_gaussian_garch.dcc,
+        inittimecond_dcc=inittimecond_dcc_gaussian_garch.dcc,
+    )
+
+    return simreturns
+
+
+def simulate_dcc_sgt_garch(
+    seed: int,
+    hashid: str,
+    key: KeyArrayLike,
+    dim: int,
+    num_sample: int,
+    params_dcc_sgt_garch: ParamsDccSgtGarch,
+    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
+    # data_simreturns_savepath: os.PathLike,
+) -> SimulatedReturns:
+    """
+    Simulate DCC-SGT-GARCH.
+    """
+    # Get the simulated innovations z_t
+    siminnov = innovations.sample_mvar_timevarying_sgt(
+        key=key,
+        num_sample=num_sample,
+        params_z_sgt_true=params_dcc_sgt_garch.innov_z,
+        inittimecond_z_sgt=inittimecond_dcc_sgt_garch.sgt,
+        save_path=None,
+    )
+
+    # Obtain the simulated asset returns R_t
+    simreturns = _simulate_returns(
+        seed=seed,
+        hashid=hashid,
+        dim=dim,
+        num_sample=num_sample,
+        siminnov=siminnov,
+        params_mean_true=params_dcc_sgt_garch.mean,
+        params_dcc_true=params_dcc_sgt_garch.dcc,
+        inittimecond_dcc=inittimecond_dcc_sgt_garch.dcc,
+        # savepath=data_simreturns_savepath,
+    )
+
+    return simreturns
+
+
+
+
+# @jit
 def dcc_sgt_loglik(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     params_dcc_sgt_garch: ParamsDccSgtGarch,
@@ -964,7 +1029,7 @@ def dcc_sgt_loglik(
     num_sample = mat_returns.shape[0]
 
     logger.debug("Begin calc_trajectories")
-    mat_lbda, mat_p0, mat_q0, _, _, tns_Sigma, mat_z, _ = calc_trajectories(
+    mat_lbda, mat_p0, mat_q0, _, _, tns_Sigma, mat_z, _ = calc_sgt_trajectories(
         mat_returns=mat_returns,
         params_dcc_sgt_garch=params_dcc_sgt_garch,
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
@@ -979,7 +1044,7 @@ def dcc_sgt_loglik(
     # Compute the log-likelihood of g(z_t | \theta_t)
     # where g \sim SGT
     logger.debug("Begin log-likelihood of z_t")
-    sgt_loglik = sgt.loglik_mvar_timevarying_sgt(
+    sgt_loglik = innovations.loglik_mvar_timevarying_sgt(
         data=mat_z,
         mat_lbda=mat_lbda,
         mat_p0=mat_p0,
@@ -1001,7 +1066,7 @@ def dcc_sgt_loglik(
 
 
 def params_to_arr(
-    params_dataclass: sgt.ParamsZSgt | ParamsMean | ParamsUVarVol | ParamsMVarCor,
+    params_dataclass: innovations.ParamsZSgt | ParamsMean | ParamsUVarVol | ParamsMVarCor,
 ) -> jpt.Array:
     """
     Take a parameter dataclass and flatten the fields to an array
@@ -1018,13 +1083,13 @@ def params_to_arr(
     arr = jnp.concatenate(lst)
 
     # Special treament for ParamsZSgt
-    if isinstance(params_dataclass, sgt.ParamsZSgt):
+    if isinstance(params_dataclass, innovations.ParamsZSgt):
         arr = arr.flatten()
 
     return arr
 
 
-def _make_params_from_arr_z_sgt(x: jpt.Array, dim: int) -> sgt.ParamsZSgt:
+def _make_params_from_arr_z_sgt(x: jpt.Array, dim: int) -> innovations.ParamsZSgt:
     """
     Take a vector x and split them into parameters related to the
     time-varying SGT process
@@ -1044,19 +1109,19 @@ def _make_params_from_arr_z_sgt(x: jpt.Array, dim: int) -> sgt.ParamsZSgt:
     #     raise
 
     # NOTE: Must be organized in alphabetical order
-    mat_lbda_tvparams = x[0 : (sgt.NUM_LBDA_TVPARAMS * dim)].reshape(
-        sgt.NUM_LBDA_TVPARAMS, dim
+    mat_lbda_tvparams = x[0 : (innovations.NUM_LBDA_TVPARAMS * dim)].reshape(
+        innovations.NUM_LBDA_TVPARAMS, dim
     )
     mat_p0_tvparams = x[
-        (sgt.NUM_LBDA_TVPARAMS * dim) : (
-            sgt.NUM_LBDA_TVPARAMS * dim + sgt.NUM_P0_TVPARAMS * dim
+        (innovations.NUM_LBDA_TVPARAMS * dim) : (
+            innovations.NUM_LBDA_TVPARAMS * dim + innovations.NUM_P0_TVPARAMS * dim
         )
-    ].reshape(sgt.NUM_P0_TVPARAMS, dim)
+    ].reshape(innovations.NUM_P0_TVPARAMS, dim)
     mat_q0_tvparams = x[
-        (sgt.NUM_LBDA_TVPARAMS * dim + sgt.NUM_P0_TVPARAMS * dim) :
-    ].reshape(sgt.NUM_Q0_TVPARAMS, dim)
+        (innovations.NUM_LBDA_TVPARAMS * dim + innovations.NUM_P0_TVPARAMS * dim) :
+    ].reshape(innovations.NUM_Q0_TVPARAMS, dim)
 
-    params_z_sgt = sgt.ParamsZSgt(
+    params_z_sgt = innovations.ParamsZSgt(
         mat_lbda_tvparams=mat_lbda_tvparams,
         mat_p0_tvparams=mat_p0_tvparams,
         mat_q0_tvparams=mat_q0_tvparams,
@@ -1096,8 +1161,45 @@ def _make_params_from_arr_dcc_uvar_vol(x: jpt.Array, dim: int) -> ParamsUVarVol:
     )
     return params_uvar_vol
 
+def _make_params_from_arr_dcc_gaussian_mvar_cor(
+    x: jpt.Array,
+    dim: int,
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    params_dcc_gaussian_garch: ParamsDccGaussianGarch,
+    inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
+) -> ParamsMVarCor:
+    """
+    Take a vector x and split them into parameters related to the
+    DCC Q_t process.
+    """
+    vec_delta = x
 
-def _make_params_from_arr_dcc_mvar_cor(
+    # Special treatment estimating \bar{Q}. Apply the ``variance-
+    # targetting'' approach. That is, we estimate by
+    # \hat{\bar{Q}} = sample moment of \hat{u}_t\hat{u}_t^{\top}.
+    _, _, _, _, mat_u = calc_general_trajectories(
+        mat_returns=mat_returns,
+        params_dcc_distr_garch=params_dcc_gaussian_garch,
+        inittimecond_dcc_distr_garch=inittimecond_dcc_gaussian_garch,
+    )
+
+    # Set \hat{\bar{Q}} = \frac{1}{T} \sum_t u_tu_t^{\top}
+    _func = vmap(jnp.outer, in_axes=[0, 0])
+    tens_uuT = _func(mat_u, mat_u)
+    mat_Qbar = tens_uuT.mean(axis=0)
+
+    # try:
+    #     if mat_Qbar.shape != (dim, dim):
+    #         raise ValueError("Shape of estimated \\bar{Q} is incorrect.")
+    # except Exception as e:
+    #     logger.error(str(e))
+    #     raise
+
+    params_mvar_cor = ParamsMVarCor(vec_delta=vec_delta, mat_Qbar=mat_Qbar)
+    return params_mvar_cor
+
+
+def _make_params_from_arr_dcc_sgt_mvar_cor(
     x: jpt.Array,
     dim: int,
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
@@ -1122,7 +1224,7 @@ def _make_params_from_arr_dcc_mvar_cor(
     # Special treatment estimating \bar{Q}. Apply the ``variance-
     # targetting'' approach. That is, we estimate by
     # \hat{\bar{Q}} = sample moment of \hat{u}_t\hat{u}_t^{\top}.
-    _, _, _, _, _, _, _, mat_u = calc_trajectories(
+    _, _, _, _, _, _, _, mat_u = calc_sgt_trajectories(
         mat_returns=mat_returns,
         params_dcc_sgt_garch=params_dcc_sgt_garch,
         inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
@@ -1144,15 +1246,15 @@ def _make_params_from_arr_dcc_mvar_cor(
     return params_mvar_cor
 
 
-def params_update(
-    params: sgt.ParamsZSgt | ParamsMean | ParamsUVarVol | ParamsMVarCor,
+def params_sgt_update(
+    params: innovations.ParamsZSgt | ParamsMean | ParamsUVarVol | ParamsMVarCor,
     params_dcc_sgt_garch: ParamsDccSgtGarch,
 ) -> ParamsDccSgtGarch:
     """
     Convenient function to update parameters into the main parameters dataclass.
     """
-    if isinstance(params, ParamsZSgt):
-        params_dcc_sgt_garch.sgt = params
+    if isinstance(params, innovations.ParamsZSgt):
+        params_dcc_sgt_garch.innov_z = params
     elif isinstance(params, ParamsMean):
         params_dcc_sgt_garch.mean = params
     elif isinstance(params, ParamsUVarVol):
@@ -1165,28 +1267,54 @@ def params_update(
     return params_dcc_sgt_garch
 
 
-def _objfun_dcc_loglik(
+def params_gaussian_update(
+    params: innovations.ParamsZGaussian | ParamsMean | ParamsUVarVol | ParamsMVarCor,
+    params_dcc_gaussian_garch: ParamsDccGaussianGarch,
+) -> ParamsDccGaussianGarch:
+    """
+    Convenient function to update parameters into the main parameters dataclass.
+    """
+    if isinstance(params, innovations.ParamsZGaussian):
+        params_dcc_gaussian_garch.innov_z = params
+    elif isinstance(params, ParamsMean):
+        params_dcc_gaussian_garch.mean = params
+    elif isinstance(params, ParamsUVarVol):
+        params_dcc_gaussian_garch.dcc.uvar_vol = params
+    elif isinstance(params, ParamsMVarCor):
+        params_dcc_gaussian_garch.dcc.mvar_cor = params
+    else:
+        raise ValueError("Incorrect specification")
+
+    return params_dcc_gaussian_garch
+
+
+def _objfun_dcc_sgt_loglik(
     x: jpt.Array,
     make_params_from_arr,
     params_dcc_sgt_garch: ParamsDccSgtGarch,
     inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
 ) -> tp.Tuple[jpt.Float, ParamsDccSgtGarch]:
+    """
+    Helper function to build partial objective functions for the DCC-SGT-GARCH likelihood.
+    """
     dim = mat_returns.shape[1]
 
     # Construct the dict for the parameters
     # that are to be optimized over
-    optimizing_params_name = make_params_from_arr.__name__
-    if optimizing_params_name == "__make_params_from_arr_dcc_mvar_cor":
-        # Special treatment in handling the estimate of
-        # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
-        _params = make_params_from_arr(x, dim, params_dcc_sgt_garch)
-    else:
-        _params = make_params_from_arr(x, dim)
+    try:
+        if len(inspect.signature(make_params_from_arr).parameters) == 3:
+            # Special treatment in handling the estimate of
+            # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
+            _params = make_params_from_arr(x, dim, params_dcc_sgt_garch)
+        elif len(inspect.signature(make_params_from_arr).parameters) == 2:
+            _params = make_params_from_arr(x, dim)
+        else:
+            raise ValueError("Check make_params_from_arr function signature")
 
-    params_dcc_sgt_garch = params_update(
-        params=_params, params_dcc_sgt_garch=params_dcc_sgt_garch
-    )
+        params_dcc_sgt_garch = params_sgt_update(params=_params, params_dcc_sgt_garch=params_dcc_sgt_garch)
+    except Exception as e: 
+        raise e
 
     logger.debug(params_dcc_sgt_garch)
     neg_loglik = dcc_sgt_loglik(
@@ -1196,6 +1324,41 @@ def _objfun_dcc_loglik(
     )
 
     return neg_loglik, params_dcc_sgt_garch
+
+def _objfun_dcc_gaussian_loglik(
+    x: jpt.Array,
+    make_params_from_arr : tp.Callable[ [jpt.Array, int], innovations.ParamsZGaussian | ParamsMean | ParamsUVarVol],
+    params_dcc_gaussian_garch: ParamsDccGaussianGarch,
+    inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+) -> tp.Tuple[jpt.Float, ParamsDccGaussianGarch]:
+    """
+    Helper function to build partial objective functions for the DCC-Gaussian-GARCH likelihood.
+    """
+    dim = mat_returns.shape[1]
+
+    # Construct the dict for the parameters
+    # that are to be optimized over
+    optimizing_params_name = make_params_from_arr.__name__
+    if optimizing_params_name == "__make_params_from_arr_dcc_gaussian_mvar_cor":
+        # Special treatment in handling the estimate of
+        # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
+        _params = _make_params_from_arr_dcc_gaussian_mvar_cor(x, dim, mat_returns, params_dcc_gaussian_garch, inittimecond_dcc_gaussian_garch)
+    else:
+        _params = make_params_from_arr(x, dim)
+
+    params_dcc_gaussian_garch = params_gaussian_update(
+        params=_params, params_dcc_gaussian_garch=params_dcc_gaussian_garch
+    )
+
+    logger.debug(params_dcc_gaussian_garch)
+    neg_loglik = dcc_gaussian_loglik(
+        mat_returns=mat_returns,
+        params_dcc_sgt_garch=params_dcc_gaussian_garch,
+        inittimecond_dcc_sgt_garch=inittimecond_dcc_gaussian_garch,
+    )
+
+    return neg_loglik, params_dcc_gaussian_garch
 
 
 def _projection_unit_simplex(x: jnp.ndarray) -> jnp.ndarray:
@@ -1277,28 +1440,29 @@ def build_estimation_step(
     optimizer: optax.GradientTransformation,
     loss_fn: tp.Callable[
         [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
-    ],
+    ] | tp.Callable[
+        [jpt.Array, ParamsDccGaussianGarch], tp.Tuple[jpt.Float, ParamsDccGaussianGarch]]
 ):
     """
     Builds a function for executing a single step in the optimization
     """
 
-    def _update(x, opt_state, params_dcc_sgt_garch):
-        grads, params_dcc_sgt_garch = jax.grad(loss_fn, has_aux=True)(
-            x, params_dcc_sgt_garch
+    def _update(x, opt_state, params_dcc_distr_garch):
+        grads, params_dcc_distr_garch = jax.grad(loss_fn, has_aux=True)(
+            x, params_dcc_distr_garch
         )
         updates, opt_state = optimizer.update(grads, opt_state, x)
         x = optax.apply_updates(x, updates)
 
-        return x, opt_state, params_dcc_sgt_garch
+        return x, opt_state, params_dcc_distr_garch
 
     return _update
 
 
-def fit(
+def fit_dcc_sgt(
     optimizer: optax.GradientTransformation,
     loss_fn: tp.Callable[
-        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
+        [jpt.Array | jpt.PyTree, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
     ],
     x_init: jpt.Array,
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
@@ -1310,7 +1474,7 @@ def fit(
     lst_projection: None | tp.List[tp.Callable[[jpt.PyTree], jpt.PyTree]] = None,
 ) -> tp.Tuple[jpt.Bool, jpt.Float, ParamsDccSgtGarch]:
     """
-    Fit
+    Fit DCC-SGT-GARCH model
     """
     train_step = build_estimation_step(optimizer, loss_fn)
 
@@ -1330,9 +1494,11 @@ def fit(
         # \hat{\bar{Q}} (i.e. volatility-targetting estimation method)
         if make_params_from_arr.__name__ == "__make_params_from_arr_dcc_mvar_cor":
             _params = make_params_from_arr(x, dim, params_dcc_sgt_garch)
-            params_dcc_sgt_garch = params_update(
+            params_dcc_sgt_garch = params_sgt_update(
                 _params, params_dcc_sgt_garch=params_dcc_sgt_garch
             )
+
+
 
         logger.debug(f"Value function at {loss_fn(x, params_dcc_sgt_garch)}")
 
@@ -1345,11 +1511,10 @@ def fit(
     valid_optimization = ~jnp.isnan(neg_loglik_val)
     return valid_optimization, neg_loglik_val, params_dcc_sgt_garch
 
-
-def dcc_sgt_garch_mle(
+def dcc_gaussian_garch_mle(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
-    guess_params_dcc_sgt_garch: ParamsDccSgtGarch,
-    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
+    guess_params_dcc_gaussian_garch: ParamsDccGaussianGarch,
+    inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
     grand_maxiter: int = 25,
     inner_maxiter: int = 10,
     optimization_schedule: tp.Callable[..., optax.Schedule] = optax.linear_schedule,
@@ -1359,68 +1524,58 @@ def dcc_sgt_garch_mle(
     solver : tp.Callable[..., optax.GradientTransformation] = optax.nadam,
 ) -> EstimationResults:
     """
-    Run DCC-SGT-GARCH optimization
+    Run DCC-Gaussian-GARCH optimization
     """
     num_sample = mat_returns.shape[0]
     dim = mat_returns.shape[1]
 
     logger.debug(
-        f"Begin DCC-SGT-GARCH optimization on num_sample = {num_sample} and dim = {dim}"
+        f"Begin DCC-Gaussian-GARCH optimization on num_sample = {num_sample} and dim = {dim}"
     )
 
     #################################################################
     ## Setup partial objective functions
     #################################################################
-    objfun_dcc_loglik_opt_params_z: tp.Callable[
-        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
-    ] = lambda x, y: _objfun_dcc_loglik(
-        x=x,
-        make_params_from_arr=_make_params_from_arr_z_sgt,
-        params_dcc_sgt_garch=y,
-        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
-        mat_returns=mat_returns,
-    )
-
     objfun_dcc_loglik_opt_params_mean: tp.Callable[
-        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
-    ] = lambda x, y: _objfun_dcc_loglik(
+        [jpt.Array, ParamsDccGaussianGarch], tp.Tuple[jpt.Float, ParamsDccGaussianGarch]
+    ] = lambda x, y: _objfun_dcc_gaussian_loglik(
         x=x,
         make_params_from_arr=_make_params_from_arr_mean,
-        params_dcc_sgt_garch=y,
-        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        params_dcc_gaussian_garch=y,
+        inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
         mat_returns=mat_returns,
     )
 
     objfun_dcc_loglik_opt_params_dcc_uvar_vol: tp.Callable[
-        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
-    ] = lambda x, y: _objfun_dcc_loglik(
+        [jpt.Array, ParamsDccGaussianGarch], tp.Tuple[jpt.Float, ParamsDccGaussianGarch]
+    ] = lambda x, y: _objfun_dcc_gaussian_loglik(
         x=x,
         make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
-        params_dcc_sgt_garch=y,
-        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        params_dcc_gaussian_garch=y,
+        inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
         mat_returns=mat_returns,
     )
 
     # Note special treatmeant here for updating DCC Q_t
     # parameters
-    @jit
+    # @jit
     def __make_params_from_arr_dcc_mvar_cor(
-        x: jpt.Array, d: int, y: ParamsDccSgtGarch
+        x: jpt.Array, d: int, y: ParamsDccGaussianGarch
     ):
-        return _make_params_from_arr_dcc_mvar_cor(
+        return _make_params_from_arr_dcc_gaussian_mvar_cor(
             x=x,
             dim=d,
             mat_returns=mat_returns,
-            params_dcc_sgt_garch=y,
-            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_gaussian_garch=y,
+            inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
         )
 
     objfun_dcc_loglik_opt_params_dcc_mvar_cor = (
-        lambda x, y: _objfun_dcc_loglik(
+        lambda x, y: _objfun_dcc_gaussian_loglik(
             x=x,
             make_params_from_arr=__make_params_from_arr_dcc_mvar_cor,
-            params_dcc_sgt_garch=y,
-            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_gaussian_garch=y,
+            inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
             mat_returns=mat_returns,
         )
     )
@@ -1448,8 +1603,8 @@ def dcc_sgt_garch_mle(
         #################################################################
         ## Step 1: Optimize for the parameters of z_t
         #################################################################
-        x0_z = params_to_arr(params_dcc_sgt_garch.sgt)
-        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit(
+        x0_z = params_to_arr(params_dcc_sgt_garch.innov_z)
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
             optimizer=optimizer,
             loss_fn=objfun_dcc_loglik_opt_params_z,
             x_init=x0_z,
@@ -1468,7 +1623,7 @@ def dcc_sgt_garch_mle(
         ## Step 2: Optimize for the parameters of the mean \mu
         #################################################################
         x0_mean = params_to_arr(params_dcc_sgt_garch.mean)
-        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit(
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
             optimizer=optimizer,
             loss_fn=objfun_dcc_loglik_opt_params_mean,
             x_init=x0_mean,
@@ -1492,7 +1647,7 @@ def dcc_sgt_garch_mle(
         ##         \sigma_{i,t}'s
         #################################################################
         x0_dcc_uvar_vol = params_to_arr(params_dcc_sgt_garch.dcc.uvar_vol)
-        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit(
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
             optimizer=optimizer,
             loss_fn=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
             x_init=x0_dcc_uvar_vol,
@@ -1515,7 +1670,7 @@ def dcc_sgt_garch_mle(
         # Note special treatment for the initial guess for the
         # DCC multivariate parameters
         x0_dcc_mvar_cor = params_dcc_sgt_garch.dcc.mvar_cor.vec_delta
-        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit(
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
             optimizer=optimizer,
             loss_fn=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
             x_init=x0_dcc_mvar_cor,
@@ -1549,6 +1704,207 @@ def dcc_sgt_garch_mle(
     return estimation_res
 
 
+def dcc_sgt_garch_mle(
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    guess_params_dcc_sgt_garch: ParamsDccSgtGarch,
+    inittimecond_dcc_sgt_garch: InitTimeConditionDccSgtGarch,
+    grand_maxiter: int = 25,
+    inner_maxiter: int = 10,
+    optimization_schedule: tp.Callable[..., optax.Schedule] = optax.linear_schedule,
+    dict_params_optimization_schedule : tp.Dict[str, float] = {'init_value' : 1e-2,
+                                                               'end_value' : 1e-4,
+                                                               'transition_steps' : 20},
+    solver : tp.Callable[..., optax.GradientTransformation] = optax.nadam,
+) -> EstimationResults:
+    """
+    Run DCC-SGT-GARCH optimization
+    """
+    num_sample = mat_returns.shape[0]
+    dim = mat_returns.shape[1]
+
+    logger.debug(
+        f"Begin DCC-SGT-GARCH optimization on num_sample = {num_sample} and dim = {dim}"
+    )
+
+    #################################################################
+    ## Setup partial objective functions
+    #################################################################
+    objfun_dcc_loglik_opt_params_z: tp.Callable[
+        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
+    ] = lambda x, y: _objfun_dcc_sgt_loglik(
+        x=x,
+        make_params_from_arr=_make_params_from_arr_z_sgt,
+        params_dcc_sgt_garch=y,
+        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        mat_returns=mat_returns,
+    )
+
+    objfun_dcc_loglik_opt_params_mean: tp.Callable[
+        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
+    ] = lambda x, y: _objfun_dcc_sgt_loglik(
+        x=x,
+        make_params_from_arr=_make_params_from_arr_mean,
+        params_dcc_sgt_garch=y,
+        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        mat_returns=mat_returns,
+    )
+
+    objfun_dcc_loglik_opt_params_dcc_uvar_vol: tp.Callable[
+        [jpt.Array, ParamsDccSgtGarch], tp.Tuple[jpt.Float, ParamsDccSgtGarch]
+    ] = lambda x, y: _objfun_dcc_sgt_loglik(
+        x=x,
+        make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
+        params_dcc_sgt_garch=y,
+        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        mat_returns=mat_returns,
+    )
+
+    # Note special treatmeant here for updating DCC Q_t
+    # parameters
+    # @jit
+    def __make_params_from_arr_dcc_mvar_cor(x: jpt.Array, d: int, y: ParamsDccSgtGarch):
+        return _make_params_from_arr_dcc_sgt_mvar_cor(
+            x=x,
+            dim=d,
+            mat_returns=mat_returns,
+            params_dcc_sgt_garch=y,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        )
+
+    objfun_dcc_loglik_opt_params_dcc_mvar_cor = (
+        lambda x, y: _objfun_dcc_sgt_loglik(
+            x=x,
+            make_params_from_arr=__make_params_from_arr_dcc_mvar_cor,
+            params_dcc_sgt_garch=y,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            mat_returns=mat_returns,
+        )
+    )
+
+    # Set the projections (i.e. serve as parameter optimization constraints)
+    projection_strictly_positive = lambda x: optax.projections.projection_box(
+        x, lower=1e-3, upper=jnp.inf
+    )
+    projection_hypercube = lambda x: optax.projections.projection_box(
+        x, lower=0, upper=1
+    )
+
+    #################################################################
+    ## Iterative log-likelihood optimization
+    #################################################################
+    valid_optimization = True
+    neg_loglik_val = 0.0
+    iter = 0
+    learning_schedule = optimization_schedule(**dict_params_optimization_schedule)
+    params_dcc_sgt_garch = guess_params_dcc_sgt_garch
+    while iter < grand_maxiter:
+        learning_rate = float(learning_schedule(iter))
+        optimizer = solver(learning_rate)
+
+        #################################################################
+        ## Step 1: Optimize for the parameters of z_t
+        #################################################################
+        x0_z = params_to_arr(params_dcc_sgt_garch.innov_z)
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
+            optimizer=optimizer,
+            loss_fn=objfun_dcc_loglik_opt_params_z,
+            x_init=x0_z,
+            mat_returns=mat_returns,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_sgt_garch=params_dcc_sgt_garch,
+            make_params_from_arr=_make_params_from_arr_z_sgt,
+            dim=dim,
+            numiter=inner_maxiter,
+        )
+        logger.info(
+            f"..... {iter}/{grand_maxiter}: Step 1/4 --- Optimize innovation z_t params. Objective function value at {neg_loglik_val}."
+        )
+
+        #################################################################
+        ## Step 2: Optimize for the parameters of the mean \mu
+        #################################################################
+        x0_mean = params_to_arr(params_dcc_sgt_garch.mean)
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
+            optimizer=optimizer,
+            loss_fn=objfun_dcc_loglik_opt_params_mean,
+            x_init=x0_mean,
+            mat_returns=mat_returns,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_sgt_garch=params_dcc_sgt_garch,
+            make_params_from_arr=_make_params_from_arr_mean,
+            dim=dim,
+            numiter=inner_maxiter,
+        )
+        neg_loglik_val = dcc_sgt_loglik(
+            mat_returns=mat_returns,
+            params_dcc_sgt_garch=params_dcc_sgt_garch,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+        )
+        logger.info(
+            f"..... {iter}/{grand_maxiter}: Step 2/4 --- Optimize mean \\mu params. Objective function value at {neg_loglik_val}.")
+
+        #################################################################
+        ## Step 3: Optimize for the parameters of the univariate vol's
+        ##         \sigma_{i,t}'s
+        #################################################################
+        x0_dcc_uvar_vol = params_to_arr(params_dcc_sgt_garch.dcc.uvar_vol)
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
+            optimizer=optimizer,
+            loss_fn=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+            x_init=x0_dcc_uvar_vol,
+            mat_returns=mat_returns,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_sgt_garch=params_dcc_sgt_garch,
+            make_params_from_arr=_make_params_from_arr_dcc_uvar_vol,
+            dim=dim,
+            numiter=inner_maxiter,
+            lst_projection=[projection_strictly_positive],
+        )
+        logger.info(
+            f"..... {iter}/{grand_maxiter}: Step 3/4 --- Optimize univariate vol \\sigma params. Objective function value at {neg_loglik_val}."
+        )
+
+        #################################################################
+        ## Step 4: Optimize for the parameters of the multivariate DCC
+        ##         Q_t's
+        #################################################################
+        # Note special treatment for the initial guess for the
+        # DCC multivariate parameters
+        x0_dcc_mvar_cor = params_dcc_sgt_garch.dcc.mvar_cor.vec_delta
+        valid_optimization, neg_loglik_val, params_dcc_sgt_garch = fit_dcc_sgt(
+            optimizer=optimizer,
+            loss_fn=objfun_dcc_loglik_opt_params_dcc_mvar_cor,
+            x_init=x0_dcc_mvar_cor,
+            mat_returns=mat_returns,
+            inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch,
+            params_dcc_sgt_garch=params_dcc_sgt_garch,
+            make_params_from_arr=__make_params_from_arr_dcc_mvar_cor,
+            dim=dim,
+            numiter=inner_maxiter,
+            lst_projection=[projection_hypercube, projection_l1_ball],
+        )
+        logger.info(
+            f"..... {iter}/{grand_maxiter}: Step 4/4 --- Optimize multivariate DCC Q_t params. Objective function value at  {neg_loglik_val}."
+        )
+
+        #################################################################
+        ## Update iteration
+        #################################################################
+        iter += 1
+
+        if valid_optimization:
+            continue
+        else:
+            logger.warn(f"Reached invalid parameter update at iter = {iter} with learning rate = {learning_rate}")
+            estimation_res = EstimationResults(valid_optimization=valid_optimization, neg_loglik_val=neg_loglik_val, params_dcc_distr_garch=params_dcc_sgt_garch)
+            return estimation_res
+
+
+    logger.debug("DCC optimization complete")
+    estimation_res = EstimationResults(valid_optimization=valid_optimization, neg_loglik_val=neg_loglik_val, params_dcc_distr_garch=params_dcc_sgt_garch)
+    return estimation_res
+
+
 
 def gen_simulation_dcc_sgt_garch(
         num_sample: int,
@@ -1575,13 +1931,13 @@ def gen_simulation_dcc_sgt_garch(
     ## Parameters for time-varying SGT
     #################################################################
     # Set the true parameters of the SGT z_t process
-    mat_lbda_tvparams = rng.uniform(-0.25, 0.25, (sgt.NUM_LBDA_TVPARAMS, dim))
+    mat_lbda_tvparams = rng.uniform(-0.25, 0.25, (innovations.NUM_LBDA_TVPARAMS, dim))
     mat_lbda_tvparams[0, :] = np.abs(mat_lbda_tvparams[0, :])
-    mat_p0_tvparams = rng.uniform(-0.25, 0.25, (sgt.NUM_P0_TVPARAMS, dim))
+    mat_p0_tvparams = rng.uniform(-0.25, 0.25, (innovations.NUM_P0_TVPARAMS, dim))
     mat_p0_tvparams[0, :] = np.abs(mat_p0_tvparams[0, :])
-    mat_q0_tvparams = rng.uniform(-0.25, 0.25, (sgt.NUM_Q0_TVPARAMS, dim))
+    mat_q0_tvparams = rng.uniform(-0.25, 0.25, (innovations.NUM_Q0_TVPARAMS, dim))
     mat_q0_tvparams[0, :] = np.abs(mat_q0_tvparams[0, :])
-    params_z_sgt_true = sgt.ParamsZSgt(
+    params_z_sgt_true = innovations.ParamsZSgt(
         mat_lbda_tvparams=jnp.array(mat_lbda_tvparams),
         mat_p0_tvparams=jnp.array(mat_p0_tvparams),
         mat_q0_tvparams=jnp.array(mat_q0_tvparams),
@@ -1589,7 +1945,7 @@ def gen_simulation_dcc_sgt_garch(
 
     # Set the initial t = 0 conditions for the various processes
     # in constructing time-varying parameters
-    inittimecond_z_sgt_true = sgt.InitTimeConditionZSgt(
+    inittimecond_z_sgt_true = innovations.InitTimeConditionZSgt(
         vec_z_init_t0=jnp.repeat(0.0, dim),
         vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
         vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
@@ -1631,10 +1987,13 @@ def gen_simulation_dcc_sgt_garch(
 
     # Put everything together
     params_dcc_sgt_garch_true = ParamsDccSgtGarch(
-        mean=params_mean_true, dcc=params_dcc_true, sgt=params_z_sgt_true
+        mean=params_mean_true, dcc=params_dcc_true, innov_z=params_z_sgt_true
     )
     inittimecond_dcc_sgt_garch_true = InitTimeConditionDccSgtGarch(
-        sgt=inittimecond_z_sgt_true, dcc=inittimecond_dcc_true
+        mat_Sigma_init_t0=mat_Sigma_init_t0,
+        mat_Q_init_t0=mat_Q_init_t0,
+        sgt=inittimecond_z_sgt_true, 
+        dcc=inittimecond_dcc_true
     )
 
     #################################################################
@@ -1669,13 +2028,13 @@ def calc_estimation_dcc_sgt_garch(
     #################################################################
     ## Initial parameter guesses
     #################################################################
-    mat_lbda_tvparams = rng.uniform(-0.35, 0.35, (sgt.NUM_LBDA_TVPARAMS, dim))
+    mat_lbda_tvparams = rng.uniform(-0.35, 0.35, (innovations.NUM_LBDA_TVPARAMS, dim))
     mat_lbda_tvparams[0, :] = np.abs(mat_lbda_tvparams[0, :])
-    mat_p0_tvparams = rng.uniform(-0.35, 0.35, (sgt.NUM_P0_TVPARAMS, dim))
+    mat_p0_tvparams = rng.uniform(-0.35, 0.35, (innovations.NUM_P0_TVPARAMS, dim))
     mat_p0_tvparams[0, :] = np.abs(mat_p0_tvparams[0, :])
-    mat_q0_tvparams = rng.uniform(-0.45, 0.45, (sgt.NUM_Q0_TVPARAMS, dim))
+    mat_q0_tvparams = rng.uniform(-0.45, 0.45, (innovations.NUM_Q0_TVPARAMS, dim))
     mat_q0_tvparams[0, :] = np.abs(mat_q0_tvparams[0, :])
-    params_z_sgt_init_guess = sgt.ParamsZSgt(
+    params_z_sgt_init_guess = innovations.ParamsZSgt(
         mat_lbda_tvparams=jnp.array(mat_lbda_tvparams),
         mat_p0_tvparams=jnp.array(mat_p0_tvparams),
         mat_q0_tvparams=jnp.array(mat_q0_tvparams),
@@ -1709,7 +2068,7 @@ def calc_estimation_dcc_sgt_garch(
     )
 
     guess_params_dcc_sgt_garch = ParamsDccSgtGarch(
-        sgt=params_z_sgt_init_guess,
+        innov_z=params_z_sgt_init_guess,
         mean=params_mean_init_guess,
         dcc=params_dcc_init_guess,
     )
@@ -1724,7 +2083,7 @@ def calc_estimation_dcc_sgt_garch(
 
     # Initital t = 1 conditions for the SGT time-varying
     # parameters process
-    inittimecond_z_sgt_guess = sgt.InitTimeConditionZSgt(
+    inittimecond_z_sgt_guess = innovations.InitTimeConditionZSgt(
         vec_z_init_t0=jnp.repeat(0.0, dim),
         vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
         vec_p0_init_t0=jnp.array(rng.uniform(3, 4, dim)),
@@ -1732,8 +2091,168 @@ def calc_estimation_dcc_sgt_garch(
     )
 
     inittimecond_dcc_sgt_garch_guess = InitTimeConditionDccSgtGarch(
-        sgt=inittimecond_z_sgt_guess, dcc=inittimecond_dcc_guess
+        mat_Sigma_init_t0=mat_Sigma_init_t0_guess,
+        mat_Q_init_t0=mat_Q_init_t0_guess,
+        sgt=inittimecond_z_sgt_guess, 
+        dcc=inittimecond_dcc_guess
     )
+
+    #################################################################
+    ## Maximum likelihood estimation
+    #################################################################
+    estimation_res = dcc_sgt_garch_mle(
+        mat_returns=mat_returns,
+        guess_params_dcc_sgt_garch=guess_params_dcc_sgt_garch,
+        inittimecond_dcc_sgt_garch=inittimecond_dcc_sgt_garch_guess,
+    )
+    return estimation_res
+
+
+def gen_simulation_dcc_gaussian_garch(
+        num_sample: int,
+        dim: int,
+        seed: int | None = None) -> SimulatedReturns:
+    """
+    Generate a simulation of the DCC-Gaussian-GARCH model and save the 
+    results.
+    """
+    #################################################################
+    ## Setup
+    #################################################################
+    # Random initial seed based on current time
+    if seed is None:
+        seed = utils.gen_seed_number()
+    hashid = uuid.uuid4().hex
+    str_id = utils.gen_str_id(num_sample=num_sample, dim=dim, hashid=hashid)
+
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+
+
+    #################################################################
+    ## Parameters for standard Gaussian
+    #################################################################
+    mean = jnp.repeat(0, dim)
+    cov = jnp.eye(dim)
+    params_innov_z_true = innovations.ParamsZGaussian(mean = mean, cov = cov)
+
+    #################################################################
+    ## Parameters for DCC-GARCH
+    #################################################################
+    # Parameters for the mean returns vector
+    params_mean_true = ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, dim) / 50))
+
+    # Params for DCC -- univariate vols
+    params_uvar_vol_true = ParamsUVarVol(
+        vec_omega=jnp.array(rng.uniform(0, 1, dim) / 2),
+        vec_beta=jnp.array(rng.uniform(0, 1, dim) / 3),
+        vec_alpha=jnp.array(rng.uniform(0, 1, dim) / 10),
+        vec_psi=jnp.array(rng.uniform(0, 1, dim) / 5),
+    )
+    # Params for DCC -- multivariate Q
+    params_mvar_cor_true = ParamsMVarCor(
+        vec_delta=jnp.array([0.007, 0.930]),
+        mat_Qbar=generate_random_cov_mat(key=key, dim=dim) / 5,
+    )
+
+    # Package all the DCC params together
+    params_dcc_true = ParamsDcc(
+        uvar_vol=params_uvar_vol_true, mvar_cor=params_mvar_cor_true
+    )
+
+
+    # Initial t = 0 conditions for the DCC Q_t process
+    subkeys = random.split(key, 2)
+    mat_Sigma_init_t0 = generate_random_cov_mat(key=subkeys[0], dim=dim)
+    mat_Q_init_t0 = generate_random_cov_mat(key=subkeys[1], dim=dim)
+    inittimecond_dcc_true = InitTimeConditionDcc(
+        mat_Sigma_init_t0=mat_Sigma_init_t0, mat_Q_init_t0=mat_Q_init_t0
+    )
+
+    # Put everything together
+    params_dcc_gaussian_garch_true = ParamsDccGaussianGarch(
+        mean=params_mean_true, dcc=params_dcc_true, innov_z=params_innov_z_true
+    )
+    inittimecond_dcc_gaussian_garch = InitTimeConditionDccGaussianGarch(dcc = inittimecond_dcc_true)
+
+    #################################################################
+    ## Simulate DCC-Gaussian-GARCH
+    #################################################################
+    simreturns = simulate_dcc_gaussian_garch(
+        seed=seed,
+        hashid = hashid,
+        key=key,
+        dim=dim,
+        num_sample=num_sample,
+        params_dcc_gaussian_garch=params_dcc_gaussian_garch_true,
+        inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch
+    )
+    return simreturns
+
+
+
+
+def calc_estimation_dcc_gaussian_garch(
+        mat_returns : jpt.Float[jpt.Array, "num_sample dim"], 
+        seed: int | None = None) -> EstimationResults:
+
+    num_sample = mat_returns.shape[0]
+    dim = mat_returns.shape[1]
+
+    if seed is None:
+        seed = utils.gen_seed_number()
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+
+    #################################################################
+    ## Initial parameter guesses
+    #################################################################
+    # Innovations parameters
+    mean = jnp.repeat(0, dim)
+    cov = jnp.eye(dim)
+    params_innov_z_true = innovations.ParamsZGaussian(mean = mean, cov = cov)
+
+    # Initial guess for parameters for the mean returns vector
+    # params_mean_init_guess = dcc.ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, DIM) / 50))
+    params_mean_init_guess = ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, dim)))
+
+
+    # Initial guess for params for DCC -- univariate vols
+    params_uvar_vol_init_guess = ParamsUVarVol(
+        vec_omega=jnp.array(rng.uniform(0, 1, dim)),
+        vec_beta=jnp.array(rng.uniform(0, 1, dim)),
+        vec_alpha=jnp.array(rng.uniform(0, 1, dim)),
+        vec_psi=jnp.array(rng.uniform(0, 1, dim)),
+    )
+
+    # Initial guess for params for DCC -- multivariate Q
+    # FIX: Need to randomize this
+    params_mvar_cor_init_guess = ParamsMVarCor(
+        vec_delta=jnp.array([0.154, 0.530]),
+        # mat_Qbar=dcc.generate_random_cov_mat(key=key, dim=DIM) / 5,
+        mat_Qbar=generate_random_cov_mat(key=key, dim=dim),
+    )
+
+    # Package all the initial guess DCC params together
+    params_dcc_init_guess = ParamsDcc(
+        uvar_vol=params_uvar_vol_init_guess,
+        mvar_cor=params_mvar_cor_init_guess,
+    )
+
+    guess_params_dcc_sgt_garch = ParamsDccGaussianGarch(
+        mean=params_mean_init_guess,
+        dcc=params_dcc_init_guess,
+        innov_z = params_innov_z_true)
+
+    # Initial t = 0 conditions for the DCC Q_t process
+    subkeys = random.split(key, 2)
+    mat_Sigma_init_t0_guess = generate_random_cov_mat(key=subkeys[0], dim=dim)
+    mat_Q_init_t0_guess = generate_random_cov_mat(key=subkeys[1], dim=dim)
+    inittimecond_dcc_guess = InitTimeConditionDcc(
+        mat_Sigma_init_t0=mat_Sigma_init_t0_guess, mat_Q_init_t0=mat_Q_init_t0_guess
+    )
+
+    inittimecond_dcc_sgt_garch_guess = InitTimeConditionDccGaussianGarch(dcc=inittimecond_dcc_guess)
 
     #################################################################
     ## Maximum likelihood estimation
@@ -1749,6 +2268,7 @@ def calc_estimation_dcc_sgt_garch(
 
 
 
-
 if __name__ == "__main__":
-    pass
+    num_sample = 100
+    dim = 5
+    hi = gen_simulation_dcc_gaussian_garch(num_sample=num_sample, dim = dim)

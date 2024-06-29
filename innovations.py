@@ -57,13 +57,18 @@ NUM_P0_TVPARAMS = 3
 NUM_Q0_TVPARAMS = 3
 
 
+@chex.dataclass(kw_only=True)
 class ParamsZ:
     """
     Generic placeholder for the parent class of parameters for an
     innovations process z_t
     """
 
-    pass
+
+@chex.dataclass
+class ParamsZGaussian(ParamsZ):
+    mean : jpt.Float[jpt.Array, "dim"]
+    cov : jpt.Float[jpt.Array, "dim dim"]
 
 
 @chex.dataclass
@@ -71,7 +76,6 @@ class ParamsZSgt(ParamsZ):
     """
     Time-varying parameters of innovations process z_t
     """
-
     mat_lbda_tvparams: jpt.Float[jpt.Array, "NUM_LBDA_TVPARAMS dim"]
     mat_p0_tvparams: jpt.Float[jpt.Array, "NUM_P0_TVPARAMS dim"]
     mat_q0_tvparams: jpt.Float[jpt.Array, "NUM_Q0_TVPARAMS dim"]
@@ -149,16 +153,27 @@ class InitTimeConditionZSgt:
     #         )
 
 
-@dataclass
+@chex.dataclass
 class SimulatedInnovations:
+    """
+    Parent class for all simulated innovations
+    """
+    # Number of time samples
+    num_sample: int
+
+    # Simulated innovations z_t data
+    data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
+
+@chex.dataclass
+class SimulatedGaussianInnovations(SimulatedInnovations):
+    params_z: ParamsZGaussian
+
+@chex.dataclass
+class SimulatedSGTInnovations(SimulatedInnovations):
     """
     Data class for keeping track of the parameters and data
     of the innovation SGT z_t
     """
-
-    # Number of time samples
-    num_sample: int
-
     ################################################################
     ## Parameters
     ################################################################
@@ -177,8 +192,6 @@ class SimulatedInnovations:
     data_mat_p0: jpt.Float[jpt.Array, "num_sample dim"]
     data_mat_q0: jpt.Float[jpt.Array, "num_sample dim"]
 
-    # Innovations z_t
-    data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
 
 
 
@@ -579,13 +592,30 @@ def _time_varying_pq_params(
     return param_t
 
 
+def sample_mvar_gaussian(key : KeyArrayLike, num_sample : int, params_z_gaussian_true : ParamsZGaussian) -> SimulatedGaussianInnovations:
+    """
+    Generate samples of iid standard multivariate 
+    Gaussian vectors
+    """
+    dim = jnp.shape(params_z_gaussian_true.cov)[0]
+
+    mean = params_z_gaussian_true.mean
+    cov = params_z_gaussian_true.cov
+
+    data_mat_z = jax.random.multivariate_normal(key = key, mean = mean,  cov = cov, shape = (num_sample, ))
+    siminnov = SimulatedGaussianInnovations(num_sample = num_sample, data_mat_z=data_mat_z, params_z= params_z_gaussian_true)
+
+    return siminnov
+
+
+
 def sample_mvar_timevarying_sgt(
     key: KeyArrayLike,
     num_sample: int,
     params_z_sgt_true: ParamsZSgt,
     inittimecond_z_sgt: InitTimeConditionZSgt,
     save_path: None | os.PathLike,
-) -> SimulatedInnovations:
+) -> SimulatedSGTInnovations:
     """
     Generate samples of time-varying SGT random
     vectors by inverse transform sampling.
@@ -657,7 +687,7 @@ def sample_mvar_timevarying_sgt(
 
     logger.debug(f"Done time-varying SGT simulation")
 
-    siminnov = SimulatedInnovations(
+    siminnov = SimulatedSGTInnovations(
         num_sample=num_sample,
         params_z_sgt=params_z_sgt_true,
         inittimecond_z_sgt=inittimecond_z_sgt,
@@ -677,38 +707,19 @@ def sample_mvar_timevarying_sgt(
 
 
 if __name__ == "__main__":
-    if RUN_TIMEVARYING_SGT_SIMULATIONS:
-        seed = 1234567
-        key = random.key(seed)
-        rng = np.random.default_rng(seed)
-        num_sample = int(3e2)
-        dim = 1
-        num_cores = 8
+    
+    seed = 12345
+    key = jax.random.key(seed)
 
-        # Set the true parameters of the SGT z_t process
-        params_z_sgt_true = ParamsZSgt(
-            mat_lbda_tvparams=jnp.array(
-                rng.uniform(-0.25, 0.25, (NUM_LBDA_TVPARAMS, dim))
-            ),
-            mat_p0_tvparams=jnp.array(rng.uniform(-1, 1, (NUM_P0_TVPARAMS, dim))),
-            mat_q0_tvparams=jnp.array(rng.uniform(-1, 1, (NUM_Q0_TVPARAMS, dim))),
-        )
+    num_sample = 100
+    dim = 5
 
-        # Set the initial t = 0 conditions for the various processes
-        # in constructing time-varying parameters
-        inittimecond_z_sgt = InitTimeConditionZSgt(
-            vec_z_init_t0=jnp.repeat(0.0, dim),
-            vec_lbda_init_t0=jnp.array(rng.uniform(-0.25, 0.25, dim)),
-            vec_p0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
-            vec_q0_init_t0=jnp.array(rng.uniform(2, 4, dim)),
-        )
+    mean = jnp.repeat(0.0, dim)
+    cov = jnp.eye(dim)
 
-        # Simulate
-        save_path = Path().resolve() / "data_timevarying_sgt.pkl"
-        siminnov = sample_mvar_timevarying_sgt(
-            key=key,
-            num_sample=num_sample,
-            params_z_sgt_true=params_z_sgt_true,
-            inittimecond_z_sgt=inittimecond_z_sgt,
-            save_path=save_path,
-        )
+    params_z_gaussian = ParamsZGaussian(mean = mean, cov = cov)
+    hi = sample_mvar_gaussian(key = key, num_sample = num_sample, params_z_gaussian_true = params_z_gaussian)
+
+
+
+    breakpoint()

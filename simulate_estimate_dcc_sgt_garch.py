@@ -8,19 +8,21 @@ from datetime import datetime
 import pickle
 import argparse
 
+import innovations
 import dcc
 import utils
 
 
+#FIX: Remove default values
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--num_simulations", type=int, help="Number of simulations", required=True
+    "--num_simulations", type=int, help="Number of simulations", required=True, const = 25, nargs="?"
 )
 parser.add_argument(
-    "--num_sample", type=int, help="Number of time observations", required=True
+    "--num_sample", type=int, help="Number of time observations", required=True, const = 100, nargs="?"
 )
 parser.add_argument(
-    "--dim", type=int, help="Dimension size (i.e. number of assets)", required=True
+    "--dim", type=int, help="Dimension size (i.e. number of assets)", required=True, const = 2, nargs="?"
 )
 args = parser.parse_args()
 
@@ -34,7 +36,8 @@ dim = args.dim
 # the initial BUFFER_SAMPLE amount so as to remove the 
 # effects of initial conditions in autoregressive-type 
 # models.
-BUFFER_SAMPLE = 1000
+# HACK:
+BUFFER_SAMPLE = 0
 
 # Directories setup
 dir_log_simulations = pathlib.Path().resolve().joinpath("./logs/simulations/")
@@ -59,6 +62,8 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+
+
 
 #########################################################
 ## Step 1: Simulate returns
