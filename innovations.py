@@ -618,24 +618,14 @@ def sample_mvar_gaussian(
     return siminnov
 
 
-def pdf_mvar_indp_gaussian(
-    x: jpt.Float[jpt.Array, "dim"],
-    mean: jpt.Float[jpt.Array, "dim"],
-    cov: jpt.Float[jpt.Array, "dim dim"],
-):
+@jit
+def loglik_std_gaussian(data: jpt.Float[jpt.Array, "num_sample data"]) -> jpt.Float:
     """
-    Density of a multivariate Gaussian random vector
-    """
-    return jscipy.stats.multivariate_normal(x=x, mean=mean, cov=cov)
-
-
-def loglik_std_gaussian(data : jpt.Float[jpt.Array, "num_sample data"]) -> jpt.Float:
-    """
-    (Negative) of the log-likleihood function of a vector of 
+    Log-likleihood function of a vector of
     standardized independent Gaussian random vectors
     """
     # Dropping constants
-    loglik = -0.5 * jnp.sum(jnp.sum(data * data, axis = 1))
+    loglik = -0.5 * jnp.sum(jnp.sum(data * data, axis=1))
     return loglik
 
 

@@ -605,6 +605,7 @@ def _calc_trajectory_mvar_cov(
     return tns_Sigma
 
 
+@jit
 def _calc_trajectory_normalized_unexp_returns(
     mat_sigma: jpt.Float[jpt.Array, "num_sample dim"],
     mat_epsilon: jpt.Float[jpt.Array, "num_sample dim"],
@@ -642,6 +643,7 @@ def _calc_trajectory_innovations(
     mat_z = _func(mat_epsilon, tns_Sigma)
 
     return mat_z
+
 
 def calc_general_trajectories(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
@@ -906,10 +908,10 @@ def _make_params_from_arr_dcc_mvar_cor(x: jpt.Array, dim: int) -> ParamsMVarCor:
 
 
 def _make_params_dcc_mvar_corQbar(
-        mat_returns : jpt.Float[jpt.Array, "num_sample dim"],
-        model_dcc_distr_garch : TypeModelDcc,
-        inittimecond_dcc : InitTimeConditionDcc,
-    ) -> ParamsMVarCorQbar:
+    mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
+    model_dcc_distr_garch: TypeModelDcc,
+    inittimecond_dcc: InitTimeConditionDcc,
+) -> ParamsMVarCorQbar:
     """
     Update the \\bar{Q} parameter.
     """
@@ -1041,6 +1043,7 @@ def projection_l1_sphere(x: jnp.ndarray, value: float = 1.0) -> jnp.ndarray:
     return jnp.sign(x) * projection_simplex(jnp.abs(x), value)
 
 
+@jit
 def projection_l1_ball(x: jnp.ndarray, max_value: float = 1.0) -> jnp.ndarray:
     r"""Projection onto the l1 ball:
 
@@ -1134,13 +1137,13 @@ def dcc_gaussian_garch_mle(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     model_dcc_gaussian_garch: ModelDccGaussianGarch,
     inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
-    grand_maxiter: int = 25,
+    grand_maxiter: int = 5,
     inner_maxiter: int = 10,
     optimization_schedule: tp.Callable[..., optax.Schedule] = optax.linear_schedule,
     dict_params_optimization_schedule: tp.Dict[str, float] = {
         "init_value": 1e-2,
         "end_value": 1e-4,
-        "transition_steps": 20,
+        "transition_steps": 10,
     },
     solver: tp.Callable[..., optax.GradientTransformation] = optax.nadam,
 ) -> EstimationResults:
@@ -1223,7 +1226,7 @@ def dcc_gaussian_garch_mle(
             model_dcc_gaussian_garch=model_dcc_gaussian_garch,
             inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
         )
-        logger.info(
+        logger.debug(
             f"..... {iter}/{grand_maxiter}: Step 1/3 --- Optimize mean \\mu params. Objective function value at {neg_loglik_val}."
         )
 
@@ -1233,24 +1236,23 @@ def dcc_gaussian_garch_mle(
         ##################################################################
         x0_dcc_uvar_vol = params_to_arr(model_dcc_gaussian_garch.uvar_vol)
         valid_optimization, neg_loglik_val, model_dcc_gaussian_garch = fit_dcc(
-           optimizer=optimizer,
-           loss_fn=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
-           x_init=x0_dcc_uvar_vol,
-           model_dcc_distr_garch=model_dcc_gaussian_garch,
-           numiter=inner_maxiter,
-           lst_projection=[projection_strictly_positive],
+            optimizer=optimizer,
+            loss_fn=objfun_dcc_loglik_opt_params_dcc_uvar_vol,
+            x_init=x0_dcc_uvar_vol,
+            model_dcc_distr_garch=model_dcc_gaussian_garch,
+            numiter=inner_maxiter,
+            lst_projection=[projection_strictly_positive],
         )
-        logger.info(
-           f"..... {iter}/{grand_maxiter}: Step 2/3 --- Optimize univariate vol \\sigma params. Objective function value at {neg_loglik_val}."
+        logger.debug(
+            f"..... {iter}/{grand_maxiter}: Step 2/3 --- Optimize univariate vol \\sigma params. Objective function value at {neg_loglik_val}."
         )
-
 
         #################################################################
         ## Step 3: Optimize for the parameters of the multivariate DCC
         ##         Q_t's
         #################################################################
         ## --------------------------------------------------------------
-        ## Step 3(a): Optimize over the \\delta parameters in the DCC 
+        ## Step 3(a): Optimize over the \\delta parameters in the DCC
         ## autoregressive equation
         ## --------------------------------------------------------------
         x0_dcc_mvar_cor = model_dcc_gaussian_garch.mvar_cor.vec_delta
@@ -1262,23 +1264,26 @@ def dcc_gaussian_garch_mle(
             numiter=inner_maxiter,
             lst_projection=[projection_hypercube, projection_l1_ball],
         )
-        logger.info(
+        logger.debug(
             f"..... {iter}/{grand_maxiter}: Step 3a/3 --- Optimize multivariate DCC Q_t params. Objective function value at  {neg_loglik_val}."
         )
 
         ## --------------------------------------------------------------
         ## Step 3(b): Update \\bar{Q}
         ## --------------------------------------------------------------
-        params_mvar_corQbar = _make_params_dcc_mvar_corQbar(mat_returns= mat_returns,
-                                                            model_dcc_distr_garch=model_dcc_gaussian_garch, 
-                                                            inittimecond_dcc=inittimecond_dcc_gaussian_garch)
+        params_mvar_corQbar = _make_params_dcc_mvar_corQbar(
+            mat_returns=mat_returns,
+            model_dcc_distr_garch=model_dcc_gaussian_garch,
+            inittimecond_dcc=inittimecond_dcc_gaussian_garch,
+        )
         model_dcc_gaussian_garch.mvar_corQbar = params_mvar_corQbar
         neg_loglik_val = dcc_gaussian_loglik(
-            mat_returns=mat_returns, 
-            model_dcc_gaussian_garch=model_dcc_gaussian_garch, 
-            inittimecond_dcc_gaussian_garch= inittimecond_dcc_gaussian_garch)
+            mat_returns=mat_returns,
+            model_dcc_gaussian_garch=model_dcc_gaussian_garch,
+            inittimecond_dcc_gaussian_garch=inittimecond_dcc_gaussian_garch,
+        )
 
-        logger.info(
+        logger.debug(
             f"..... {iter}/{grand_maxiter}: Step 3b/3 --- Optimize multivariate DCC Q_t params. Objective function value at  {neg_loglik_val}."
         )
 
@@ -1307,7 +1312,6 @@ def dcc_gaussian_garch_mle(
         dcc_model=model_dcc_gaussian_garch,
     )
     return estimation_res
-
 
 
 def gen_simulation_dcc_gaussian_garch(

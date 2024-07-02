@@ -13,16 +13,31 @@ import dcc
 import utils
 
 
-#FIX: Remove default values
+# FIX: Remove default values
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--num_simulations", type=int, help="Number of simulations", required=True, const = 25, nargs="?"
+    "--num_simulations",
+    type=int,
+    help="Number of simulations",
+    required=True,
+    const=25,
+    nargs="?",
 )
 parser.add_argument(
-    "--num_sample", type=int, help="Number of time observations", required=True, const = 100, nargs="?"
+    "--num_sample",
+    type=int,
+    help="Number of time observations",
+    required=True,
+    const=100,
+    nargs="?",
 )
 parser.add_argument(
-    "--dim", type=int, help="Dimension size (i.e. number of assets)", required=True, const = 2, nargs="?"
+    "--dim",
+    type=int,
+    help="Dimension size (i.e. number of assets)",
+    required=True,
+    const=2,
+    nargs="?",
 )
 args = parser.parse_args()
 
@@ -30,14 +45,13 @@ num_simulations = args.num_simulations
 num_sample = args.num_sample
 dim = args.dim
 
-# Number of additional samples to simulate, so that 
-# the total number of samples generated is 
-# BUFFER_SAMPLE + num_sample. However, we will discard 
-# the initial BUFFER_SAMPLE amount so as to remove the 
-# effects of initial conditions in autoregressive-type 
+# Number of additional samples to simulate, so that
+# the total number of samples generated is
+# BUFFER_SAMPLE + num_sample. However, we will discard
+# the initial BUFFER_SAMPLE amount so as to remove the
+# effects of initial conditions in autoregressive-type
 # models.
-# HACK:
-BUFFER_SAMPLE = 0
+BUFFER_SAMPLE = 1000
 
 # Directories setup
 dir_log_simulations = pathlib.Path().resolve().joinpath("./logs/simulations/")
@@ -64,7 +78,6 @@ logging.basicConfig(
 )
 
 
-
 #########################################################
 ## Step 1: Simulate returns
 #########################################################
@@ -73,8 +86,10 @@ simreturns_fn = dir.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
 
 # Generate simulations if it's not available yet
 if ~simreturns_fn.is_file():
-    logger.info(f"Begin simulation")
-    simreturns = dcc.gen_simulation_dcc_gaussian_garch(num_sample= BUFFER_SAMPLE + num_sample, dim=dim)
+    logger.info(f"No existing simulation. Begin simulation")
+    simreturns = dcc.gen_simulation_dcc_gaussian_garch(
+        num_sample=BUFFER_SAMPLE + num_sample, dim=dim
+    )
 
     with open(simreturns_fn, "wb") as f:
         pickle.dump(simreturns, f)
@@ -88,9 +103,9 @@ with open(simreturns_fn, "rb") as f:
 logger.info(f"Finished loading simulation {simreturns_fn}")
 
 
-# Truncate the sample so that we are not affected 
-# by the initial conditions of the simulation. Thus the 
-# data shape that enters into estimation is of 
+# Truncate the sample so that we are not affected
+# by the initial conditions of the simulation. Thus the
+# data shape that enters into estimation is of
 # (num_sample, dim).
 mat_returns = simreturns.data_mat_returns[BUFFER_SAMPLE:]
 
@@ -112,11 +127,7 @@ while sim < num_simulations:
 
     # Estimate parameters
     logger.info(f"Begin estimation")
-    # HACK:
-    # estimation_res = dcc.calc_estimation_dcc_sgt_garch(mat_returns=mat_returns)
     estimation_res = dcc.calc_estimation_dcc_gaussian_garch(mat_returns=mat_returns)
-
-    breakpoint()
 
     # Save only results where optimization was valid
     if estimation_res.valid_optimization:
@@ -138,5 +149,5 @@ while sim < num_simulations:
     total_time = end_time - beg_time
 
     logger.info(
-        f"--- Done DCC-SGT-GARCH simulations and estimation results in {total_time:.3f}s {fn} ---"
+        f"--- Done DCC-Gaussian-GARCH simulations and estimation results in {total_time:.3f}s {fn} ---"
     )
