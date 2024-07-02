@@ -25,6 +25,7 @@ import itertools
 from functools import partial
 
 from dataclasses import dataclass
+import jax.scipy as jscipy
 
 # import optax
 # import jaxopt
@@ -67,8 +68,8 @@ class ParamsZ:
 
 @chex.dataclass
 class ParamsZGaussian(ParamsZ):
-    mean : jpt.Float[jpt.Array, "dim"]
-    cov : jpt.Float[jpt.Array, "dim dim"]
+    mean: jpt.Float[jpt.Array, "dim"]
+    cov: jpt.Float[jpt.Array, "dim dim"]
 
 
 @chex.dataclass
@@ -76,6 +77,7 @@ class ParamsZSgt(ParamsZ):
     """
     Time-varying parameters of innovations process z_t
     """
+
     mat_lbda_tvparams: jpt.Float[jpt.Array, "NUM_LBDA_TVPARAMS dim"]
     mat_p0_tvparams: jpt.Float[jpt.Array, "NUM_P0_TVPARAMS dim"]
     mat_q0_tvparams: jpt.Float[jpt.Array, "NUM_Q0_TVPARAMS dim"]
@@ -119,7 +121,6 @@ class ParamsZSgt(ParamsZ):
         return True
 
 
-
 @chex.dataclass
 class InitTimeConditionZSgt:
     """
@@ -158,15 +159,18 @@ class SimulatedInnovations:
     """
     Parent class for all simulated innovations
     """
+
     # Number of time samples
     num_sample: int
 
     # Simulated innovations z_t data
     data_mat_z: jpt.Float[jpt.Array, "num_sample dim"]
 
+
 @chex.dataclass
 class SimulatedGaussianInnovations(SimulatedInnovations):
     params_z: ParamsZGaussian
+
 
 @chex.dataclass
 class SimulatedSGTInnovations(SimulatedInnovations):
@@ -174,6 +178,7 @@ class SimulatedSGTInnovations(SimulatedInnovations):
     Data class for keeping track of the parameters and data
     of the innovation SGT z_t
     """
+
     ################################################################
     ## Parameters
     ################################################################
@@ -191,9 +196,6 @@ class SimulatedSGTInnovations(SimulatedInnovations):
     data_mat_lbda: jpt.Float[jpt.Array, "num_sample dim"]
     data_mat_p0: jpt.Float[jpt.Array, "num_sample dim"]
     data_mat_q0: jpt.Float[jpt.Array, "num_sample dim"]
-
-
-
 
 
 @partial(jax.jit, static_argnames=["mu", "sigma", "mean_cent", "var_adj"])
@@ -569,14 +571,17 @@ def _time_varying_pq_params(
 
     try:
         # Define the transition terms on the RHS
-        _rhs = (log(1 + theta[0]) + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1) + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1)))
+        _rhs = (
+            log(1 + theta[0])
+            + negative_part(theta[1]) * abs(z_t_minus_1) * indicator(z_t_minus_1)
+            + positive_part(theta[1]) * abs(z_t_minus_1) * (1 - indicator(z_t_minus_1))
+        )
 
         # param_t = theta_bar + exp(_rhs + theta[2] * log(param_t_minus_1 - theta_bar))
         param_t = exp(_rhs + theta[2] * log(param_t_minus_1))
 
         # TODO: Think about this spec?
         param_t = jnp.max(jnp.array([theta_bar, param_t]))
-        
 
     except FloatingPointError as e:
         # Floating point error most likely in the log(.) calculation
@@ -588,13 +593,14 @@ def _time_varying_pq_params(
         logger.debug(str(e))
         param_t = param_t_minus_1
 
-    
     return param_t
 
 
-def sample_mvar_gaussian(key : KeyArrayLike, num_sample : int, params_z_gaussian_true : ParamsZGaussian) -> SimulatedGaussianInnovations:
+def sample_mvar_gaussian(
+    key: KeyArrayLike, num_sample: int, params_z_gaussian_true: ParamsZGaussian
+) -> SimulatedGaussianInnovations:
     """
-    Generate samples of iid standard multivariate 
+    Generate samples of iid standard multivariate
     Gaussian vectors
     """
     dim = jnp.shape(params_z_gaussian_true.cov)[0]
@@ -602,11 +608,35 @@ def sample_mvar_gaussian(key : KeyArrayLike, num_sample : int, params_z_gaussian
     mean = params_z_gaussian_true.mean
     cov = params_z_gaussian_true.cov
 
-    data_mat_z = jax.random.multivariate_normal(key = key, mean = mean,  cov = cov, shape = (num_sample, ))
-    siminnov = SimulatedGaussianInnovations(num_sample = num_sample, data_mat_z=data_mat_z, params_z= params_z_gaussian_true)
+    data_mat_z = jax.random.multivariate_normal(
+        key=key, mean=mean, cov=cov, shape=(num_sample,)
+    )
+    siminnov = SimulatedGaussianInnovations(
+        num_sample=num_sample, data_mat_z=data_mat_z, params_z=params_z_gaussian_true
+    )
 
     return siminnov
 
+
+def pdf_mvar_indp_gaussian(
+    x: jpt.Float[jpt.Array, "dim"],
+    mean: jpt.Float[jpt.Array, "dim"],
+    cov: jpt.Float[jpt.Array, "dim dim"],
+):
+    """
+    Density of a multivariate Gaussian random vector
+    """
+    return jscipy.stats.multivariate_normal(x=x, mean=mean, cov=cov)
+
+
+def loglik_std_gaussian(data : jpt.Float[jpt.Array, "num_sample data"]) -> jpt.Float:
+    """
+    (Negative) of the log-likleihood function of a vector of 
+    standardized independent Gaussian random vectors
+    """
+    # Dropping constants
+    loglik = -0.5 * jnp.sum(jnp.sum(data * data, axis = 1))
+    return loglik
 
 
 def sample_mvar_timevarying_sgt(
@@ -707,7 +737,7 @@ def sample_mvar_timevarying_sgt(
 
 
 if __name__ == "__main__":
-    
+
     seed = 12345
     key = jax.random.key(seed)
 
@@ -717,9 +747,9 @@ if __name__ == "__main__":
     mean = jnp.repeat(0.0, dim)
     cov = jnp.eye(dim)
 
-    params_z_gaussian = ParamsZGaussian(mean = mean, cov = cov)
-    hi = sample_mvar_gaussian(key = key, num_sample = num_sample, params_z_gaussian_true = params_z_gaussian)
-
-
+    params_z_gaussian = ParamsZGaussian(mean=mean, cov=cov)
+    hi = sample_mvar_gaussian(
+        key=key, num_sample=num_sample, params_z_gaussian_true=params_z_gaussian
+    )
 
     breakpoint()

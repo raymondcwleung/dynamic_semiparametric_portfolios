@@ -74,9 +74,7 @@ simreturns_fn = dir.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
 # Generate simulations if it's not available yet
 if ~simreturns_fn.is_file():
     logger.info(f"Begin simulation")
-    #HACK:
-    simreturns = dcc.gen_simulation_dcc_sgt_garch(num_sample= BUFFER_SAMPLE + num_sample, dim=dim)
-    # simreturns = dcc.gen_simulation_dcc_gaussian_garch(num_sample= BUFFER_SAMPLE + num_sample, dim=dim)
+    simreturns = dcc.gen_simulation_dcc_gaussian_garch(num_sample= BUFFER_SAMPLE + num_sample, dim=dim)
 
     with open(simreturns_fn, "wb") as f:
         pickle.dump(simreturns, f)
@@ -88,6 +86,7 @@ if ~simreturns_fn.is_file():
 with open(simreturns_fn, "rb") as f:
     simreturns = pickle.load(f)
 logger.info(f"Finished loading simulation {simreturns_fn}")
+
 
 # Truncate the sample so that we are not affected 
 # by the initial conditions of the simulation. Thus the 
@@ -114,8 +113,8 @@ while sim < num_simulations:
     # Estimate parameters
     logger.info(f"Begin estimation")
     # HACK:
-    estimation_res = dcc.calc_estimation_dcc_sgt_garch(mat_returns=mat_returns)
-    # estimation_res = dcc.calc_estimation_dcc_gaussian_garch(mat_returns=mat_returns)
+    # estimation_res = dcc.calc_estimation_dcc_sgt_garch(mat_returns=mat_returns)
+    estimation_res = dcc.calc_estimation_dcc_gaussian_garch(mat_returns=mat_returns)
 
     breakpoint()
 
