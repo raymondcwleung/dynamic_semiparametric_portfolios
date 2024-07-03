@@ -1137,7 +1137,7 @@ def dcc_gaussian_garch_mle(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     model_dcc_gaussian_garch: ModelDccGaussianGarch,
     inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
-    grand_maxiter: int = 100,
+    grand_maxiter: int = 10,
     inner_maxiter: int = 10,
     optimization_schedule: tp.Callable[..., optax.Schedule] = optax.linear_schedule,
     dict_params_optimization_schedule: tp.Dict[str, float] = {
@@ -1348,17 +1348,17 @@ def gen_simulation_dcc_gaussian_garch(
 
     # Params for DCC -- univariate vols
     params_uvar_vol_true = ParamsUVarVol(
-        vec_omega=jnp.array(rng.uniform(0, 1, dim) / 2),
-        vec_beta=jnp.array(rng.uniform(0, 1, dim) / 3),
-        vec_alpha=jnp.array(rng.uniform(0, 1, dim) / 10),
-        vec_psi=jnp.array(rng.uniform(0, 1, dim) / 5),
+        vec_omega=jnp.array(rng.uniform(0, 1, dim)),
+        vec_beta=jnp.array(rng.uniform(0, 1, dim)),
+        vec_alpha=jnp.array(rng.uniform(0, 1, dim)),
+        vec_psi=jnp.array(rng.uniform(0, 1, dim)),
     )
     # Params for DCC -- multivariate Q
     params_mvar_cor_true = ParamsMVarCor(
         vec_delta=jnp.array([0.007, 0.930]),
     )
     params_mvar_corQbar_true = ParamsMVarCorQbar(
-        mat_Qbar=generate_random_cov_mat(key=key, dim=dim) / 5,
+        mat_Qbar=generate_random_cov_mat(key=key, dim=dim),
     )
 
     # Initial t = 0 conditions for the DCC Q_t process
@@ -1418,7 +1418,7 @@ def calc_estimation_dcc_gaussian_garch(
 
     # Initial guess for parameters for the mean returns vector
     # params_mean_init_guess = dcc.ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, DIM) / 50))
-    params_mean_init_guess = ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, dim)))
+    params_mean_init_guess = ParamsMean(vec_mu=jnp.array(rng.uniform(0, 1, dim) / 50 ))
 
     # Initial guess for params for DCC -- univariate vols
     params_uvar_vol_init_guess = ParamsUVarVol(
