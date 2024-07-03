@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 import pickle
 import argparse
+import os
 
 import innovations
 import dcc
@@ -54,10 +55,14 @@ dim = args.dim
 BUFFER_SAMPLE = 1000
 
 # Directories setup
-dir_log_simulations = pathlib.Path().resolve().joinpath("./logs/simulations/")
-dir_data_simulations = pathlib.Path().resolve().joinpath("./data/simulations/")
+dir_data_simulations = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
+dir_log_simulations = dir_data_simulations.joinpath("./_logs")
+dir_data_simulations_simreturns = dir_data_simulations.joinpath("./simreturns")
+dir_data_simulations_estimations = dir_data_simulations.joinpath("./estimations")
 dir_log_simulations.mkdir(parents=True, exist_ok=True)
 dir_data_simulations.mkdir(parents=True, exist_ok=True)
+dir_data_simulations_simreturns.mkdir(parents=True, exist_ok=True)
+dir_data_simulations_estimations.mkdir(parents=True, exist_ok=True)
 
 # Logging
 current_time = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -81,26 +86,22 @@ logging.basicConfig(
 #########################################################
 ## Step 1: Simulate returns
 #########################################################
-dir = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
-simreturns_fn = dir.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
-
-# Generate simulations if it's not available yet
-if ~simreturns_fn.is_file():
+simreturns_fn = dir_data_simulations_simreturns.joinpath(f"./simreturns_{num_sample}_{dim}.pkl")
+if simreturns_fn.is_file() is False:
+    # Generate simulations if it's not available yet
     logger.info(f"No existing simulation. Begin simulation")
     simreturns = dcc.gen_simulation_dcc_gaussian_garch(
         num_sample=BUFFER_SAMPLE + num_sample, dim=dim
     )
-
     with open(simreturns_fn, "wb") as f:
         pickle.dump(simreturns, f)
 
     logger.info(f"End simulation")
-
-
-# Load in simulated results
-with open(simreturns_fn, "rb") as f:
-    simreturns = pickle.load(f)
-logger.info(f"Finished loading simulation {simreturns_fn}")
+else:
+    # Load in already computed simulated results
+    with open(simreturns_fn, "rb") as f:
+        simreturns = pickle.load(f)
+    logger.info(f"Finished loading simulation {simreturns_fn}")
 
 
 # Truncate the sample so that we are not affected
@@ -109,9 +110,17 @@ logger.info(f"Finished loading simulation {simreturns_fn}")
 # (num_sample, dim).
 mat_returns = simreturns.data_mat_returns[BUFFER_SAMPLE:]
 
+
 #########################################################
 ## Step 2: Estimation
 #########################################################
+# Clean all existing (if any) estimations results
+logger.info("Clean all existing estimations")
+filelist = [f for f in os.listdir(dir_data_simulations_estimations)]
+for f in filelist: 
+    os.remove(os.path.join(dir_data_simulations_estimations, f))
+
+
 sim = 0
 while sim < num_simulations:
     # Setup
@@ -134,8 +143,7 @@ while sim < num_simulations:
         neg_loglik_val = np.array(estimation_res.neg_loglik_val)
         dict_res = {"simreturns": simreturns, "estimation_res": estimation_res}
 
-        dir = utils.get_simulations_data_dir(num_sample=num_sample, dim=dim)
-        with open(dir.joinpath(f"{fn}.pkl"), "wb") as f:
+        with open(dir_data_simulations_estimations.joinpath(f"{fn}.pkl"), "wb") as f:
             pickle.dump(dict_res, f)
 
         logger.info(f"End estimation with at value {neg_loglik_val}")

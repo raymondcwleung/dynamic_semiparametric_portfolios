@@ -17,8 +17,10 @@ import numpy as np
 from pandas._libs.tslibs.timedeltas import truediv_object_array
 
 import utils
-import sgt
+import innovations
 import dcc
+
+from innovations import SimulatedInnovations
 
 
 
@@ -29,7 +31,7 @@ dim = 2
 
 
 # Init
-lst_params_z_sgt = []
+lst_params_mean = []
 lst_params_uvar_vol = []
 lst_params_mvar_cor = []
 
@@ -52,22 +54,18 @@ for fn in lst_files:
     # FIX: Need to put in mean parameters here
 
     # Extract the true parameters
-    params_z_sgt_true: sgt.ParamsZSgt = simreturns.siminnov.params_z_sgt
-    params_uvar_vol_true: dcc.ParamsUVarVol = simreturns.params_dcc_true.uvar_vol
-    params_mvar_cor_true: dcc.ParamsMVarCor = simreturns.params_dcc_true.mvar_cor
+    params_mean_true : dcc.ParamsMean = simreturns.model_dcc_true.mean
+    params_uvar_vol_true: dcc.ParamsUVarVol = simreturns.model_dcc_true.uvar_vol
+    params_mvar_cor_true: dcc.ParamsMVarCor = simreturns.model_dcc_true.mvar_cor
 
     # Extract the estimated parameters
-    params_z_sgt_est: sgt.ParamsZSgt = estimation_res.params_dcc_sgt_garch.sgt
-    params_uvar_vol_est: dcc.ParamsUVarVol = (
-        estimation_res.params_dcc_sgt_garch.dcc.uvar_vol
-    )
-    params_mvar_cor_est: dcc.ParamsUVarVol = (
-        estimation_res.params_dcc_sgt_garch.dcc.mvar_cor
-    )
+    params_mean_est : dcc.ParamsMean = estimation_res.dcc_model.mean
+    params_uvar_vol_est: dcc.ParamsUVarVol = estimation_res.dcc_model.uvar_vol
+    params_mvar_cor_est: dcc.ParamsUVarVol = estimation_res.dcc_model.mvar_cor
 
     # Compute the square difference between the true parameters and the estimated parameters
-    res_params_z_sgt = utils.calc_param_squared_difference(
-        params_z_sgt_true, params_z_sgt_est, sgt.ParamsZSgt
+    res_params_mean = utils.calc_param_squared_difference(
+        params_mean_true, params_mean_est, dcc.ParamsMean
     )
     res_params_uvar_vol = utils.calc_param_squared_difference(
         params_uvar_vol_true, params_uvar_vol_est, dcc.ParamsUVarVol
@@ -77,13 +75,13 @@ for fn in lst_files:
     )
 
     # Update
-    lst_params_z_sgt.append(res_params_z_sgt)
+    lst_params_mean.append(res_params_mean)
     lst_params_uvar_vol.append(res_params_uvar_vol)
     lst_params_mvar_cor.append(res_params_mvar_cor)
 
 
 
-dict_results_params_z_sgt = utils.calc_param_analytics_summary(lst_params_z_sgt, sgt.ParamsZSgt)
+dict_results_params_mean = utils.calc_param_analytics_summary(lst_params_mean, dcc.ParamsMean)
 dict_results_params_uvar_vol = utils.calc_param_analytics_summary(lst_params_uvar_vol, dcc.ParamsUVarVol)
 dict_results_params_mvar_cor = utils.calc_param_analytics_summary(lst_params_mvar_cor, dcc.ParamsMVarCor)
 
