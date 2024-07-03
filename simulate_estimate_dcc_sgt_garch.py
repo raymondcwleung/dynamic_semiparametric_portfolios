@@ -141,10 +141,9 @@ while sim < num_simulations:
     # Save only results where optimization was valid
     if estimation_res.valid_optimization:
         neg_loglik_val = np.array(estimation_res.neg_loglik_val)
-        dict_res = {"simreturns": simreturns, "estimation_res": estimation_res}
 
         with open(dir_data_simulations_estimations.joinpath(f"{fn}.pkl"), "wb") as f:
-            pickle.dump(dict_res, f)
+            pickle.dump(estimation_res, f)
 
         logger.info(f"End estimation with at value {neg_loglik_val}")
         sim += 1
