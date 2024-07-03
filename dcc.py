@@ -1137,7 +1137,7 @@ def dcc_gaussian_garch_mle(
     mat_returns: jpt.Float[jpt.Array, "num_sample dim"],
     model_dcc_gaussian_garch: ModelDccGaussianGarch,
     inittimecond_dcc_gaussian_garch: InitTimeConditionDccGaussianGarch,
-    grand_maxiter: int = 5,
+    grand_maxiter: int = 100,
     inner_maxiter: int = 10,
     optimization_schedule: tp.Callable[..., optax.Schedule] = optax.linear_schedule,
     dict_params_optimization_schedule: tp.Dict[str, float] = {
