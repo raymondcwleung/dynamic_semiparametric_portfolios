@@ -83,7 +83,7 @@ def calc_dnu_1_squared(
     alpha_1: jpt.Float,
     dW_1: jpt.Float[jpt.Array, "ts.size"],
     nu_1_init: jpt.Float,
-) -> jpt.Float[jpt.Array, "ts.size+1"]:
+) -> jpt.Float[jpt.Array, "ts.size"]:
     """
     Simulate d\\nu_{1t}^2 = \\alpha_1 \\nu_{1t}^2 dt + dW_{1t}
     """
@@ -130,7 +130,7 @@ def calc_dnu_1_squared(
 
 
     nu_1_squared_init = nu_1_init**2
-    _, vec_nu_1_squared = jax.lax.scan(_calc_nu_1_squared_t, init = nu_1_squared_init, xs = dW_1)
+    _, vec_nu_1_squared = jax.lax.scan(_calc_nu_1_squared_t, init = nu_1_squared_init, xs = dW_1[1:])
     vec_nu_1_squared = jnp.insert(vec_nu_1_squared, obj=0, values=nu_1_squared_init, axis = 0)
 
     return vec_nu_1_squared
@@ -144,7 +144,7 @@ def calc_dnu_2_squared(
     phi: jpt.Float,
     dW_2: jpt.Float[jpt.Array, "ts.size"],
     nu_2_init: jpt.Float,
-) -> jpt.Float[jpt.Array, "ts.size+1"]:
+) -> jpt.Float[jpt.Array, "ts.size"]:
     """
     Simulate d\\nu_{2t}^2 = \\alpha_2 \\nu_{2t}^2 dt + (1 + \\phi \\nu_{2t}^2)dW_{1t}
     """
@@ -192,7 +192,7 @@ def calc_dnu_2_squared(
     #
     nu_2_squared_init = nu_2_init**2
 
-    _, vec_nu_2_squared = jax.lax.scan(_calc_nu_2_squared_t, init = nu_2_squared_init, xs = dW_2)
+    _, vec_nu_2_squared = jax.lax.scan(_calc_nu_2_squared_t, init = nu_2_squared_init, xs = dW_2[1:])
     vec_nu_2_squared = jnp.insert(arr=vec_nu_2_squared, obj=0, values=nu_2_squared_init, axis=0)
 
     return vec_nu_2_squared
@@ -218,9 +218,9 @@ def spline_exponential(x: jpt.Float) -> jpt.Float:
 # @jit
 def calc_nu_squared(
     beta,
-    vec_nu_1_squared: jpt.Float[jpt.Array, "ts.size+1"],
-    vec_nu_2_squared: jpt.Float[jpt.Array, "ts.size+1"],
-) -> jpt.Float[jpt.Array, "ts.size+1"]:
+    vec_nu_1_squared: jpt.Float[jpt.Array, "ts.size"],
+    vec_nu_2_squared: jpt.Float[jpt.Array, "ts.size"],
+) -> jpt.Float[jpt.Array, "ts.size"]:
     """
     Calculate \\nu_t^2 = s-exp( \\beta_0 + \\beta_1\\nu_{1t}^2 + \\beta_2\\nu_{2t}^2 )
     """
@@ -245,7 +245,7 @@ def calc_dlogS(
     dW : jpt.Float[jpt.Array, "ts.size"],
     price_init: jpt.Float,
     nu_init: jpt.Float,
-):
+) -> jpt.Float[jpt.Array, "ts.size"]:
 
     def _drift():
         return params.mu
@@ -272,20 +272,56 @@ def calc_dlogS(
             * vec_nu[i]
         )
 
-    def _calc_logS_t(ii_minus_1, logS_t_minus_1):
+    def _calc_logS_t(ii, logS_t_minus_1):
         """
         Convenient solution for transitioning to \\log S_t
         """
         logS_t = (
             logS_t_minus_1
             + _drift() * delta_t
-            + _diffusion_1(ii_minus_1) * dW[ii_minus_1 + 1, 0]
-            + _diffusion_2(ii_minus_1) * dW[ii_minus_1 + 1, 1]
-            + _diffusion_3(ii_minus_1) * dW[ii_minus_1 + 1, 2]
+            + _diffusion_1(ii) * dW[ii, 0]
+            + _diffusion_2(ii) * dW[ii, 1]
+            + _diffusion_3(ii) * dW[ii, 2]
         )
         # vec_logS = vec_logS.at[ii].set(logS_t)
 
-        return ii_minus_1 + 1, logS_t
+        return ii + 1, logS_t
+
+    def _diffusion_11(sigma_u_t, nu_t):
+        """
+        Diffusion term \\rho_1\\sigma_{ut}\\nu_t
+        """
+        return params.rho[0] * sigma_u_t * nu_t
+
+    def _diffusion_22(sigma_u_t, nu_t):
+        """
+        Diffusion term \\rho_2\\sigma_{ut}\\nu_t
+        """
+        return params.rho[1] * sigma_u_t * nu_t
+
+    def _diffusion_33(sigma_u_t, nu_t):
+        """
+        Diffusion term \\sqrt{1 - \\rho_1^2 - \\rho_2^2}\\sigma_{ut}\\nu_t
+        """
+        return (
+            jnp.sqrt(1 - params.rho[1] ** 2 - params.rho[2] ** 2)
+            * sigma_u_t
+            * nu_t
+        )
+
+    def _calc_logS_tt(carry, xs):
+        dW_t, sigma_u_t_minus_1, nu_t_minus_1 = xs
+        logS_t_minus_1 = carry
+
+        logS_t = (
+            logS_t_minus_1
+            + _drift() * delta_t
+            + _diffusion_11(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[0]
+            + _diffusion_22(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[1]
+            + _diffusion_33(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[2]
+        )
+        carry = logS_t
+        return carry, carry
 
     # Compute \\nu_t's
     vec_nu_1_squared = calc_dnu_1_squared(
@@ -315,21 +351,31 @@ def calc_dlogS(
         ts, A=params.A, B=params.B, C=params.C, a=params.a, b=params.b
     )
 
-    # Compute \\logS_t's
-    vec_logS = jnp.zeros(ts.size)
-    vec_logS = vec_logS.at[0].set(jnp.log(price_init))
 
-    for ii in range(1, ts.size):
-        logS_t_minus_1 = vec_logS[ii - 1]
 
-        logS_t = (
-            logS_t_minus_1
-            + _drift() * delta_t
-            + _diffusion_1(ii - 1) * dW[ii, 0]
-            + _diffusion_2(ii - 1) * dW[ii, 1]
-            + _diffusion_3(ii - 1) * dW[ii, 2]
-        )
-        vec_logS = vec_logS.at[ii].set(logS_t)
+    # # Compute \\logS_t's
+    # vec_logS = jnp.zeros(ts.size)
+    # vec_logS = vec_logS.at[0].set(jnp.log(price_init))
+    #
+    # for ii in range(1, ts.size):
+    #     logS_t_minus_1 = vec_logS[ii - 1]
+    #
+    #     logS_t = (
+    #         logS_t_minus_1
+    #         + _drift() * delta_t
+    #         + _diffusion_1(ii - 1) * dW[ii - 1, 0]
+    #         + _diffusion_2(ii - 1) * dW[ii - 1, 1]
+    #         + _diffusion_3(ii - 1) * dW[ii - 1, 2]
+    #     )
+    #     vec_logS = vec_logS.at[ii].set(logS_t)
+
+
+
+    logS_init =jnp.log(price_init)
+    xs = (dW, vec_sigma_u, vec_nu)
+    _, vec_logS = jax.lax.scan(_calc_logS_tt, init = logS_init, xs = xs)
+    vec_logS = jnp.insert(vec_logS, 0, logS_init, axis = 0)
+    vec_logS = jnp.delete(vec_logS, -1, axis = 0)
 
     return vec_logS
 
@@ -337,16 +383,16 @@ def calc_dlogS(
 d = 3
 t_init = 0
 t_end = 1
-burn_in_discr = 1000
+burn_in_discr = 0
 num_discr = 23400
-tot_discr = burn_in_discr + 1500
+tot_discr = burn_in_discr + num_discr
 delta_t = float((t_end - t_init)) / tot_discr
 ts = jnp.arange(t_init, t_end + delta_t, delta_t)
 assert ts.size == tot_discr + 1
 
 params = ParamsTwoFactorSV()
 
-dW = calc_dW(key=key, delta_t=delta_t, num_discr=tot_discr, d=d)
+dW = calc_dW(key=key, delta_t=delta_t, num_discr=ts.size, d=d)
 
 # Initial conditions
 nu_1_init = jax.random.normal(key=key) * jnp.sqrt(-1 / (2 * params.alpha[0]))
