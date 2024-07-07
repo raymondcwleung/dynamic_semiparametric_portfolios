@@ -32,7 +32,8 @@ from dataclasses import dataclass
 
 import utils
 
-jax.config.update("jax_enable_x64", True)  # Should use x64 in full prod
+# jax.config.update("jax_enable_x64", True)  # Should use x32 in full prod
+jax.config.update("jax_debug_nans", True)  # Should disable in full prod
 
 
 @dataclass
@@ -51,33 +52,30 @@ class ParamsTwoFactorSV:
     b: jpt.Float = 10.0
 
 
-# HACK:
-seed = 1234567
-if seed is None:
-    seed = utils.gen_seed_number()
-key = random.key(seed)
-rng = np.random.default_rng(seed)
-
 TimeSequence: tp.TypeAlias = jpt.Float[jpt.Array, "num_discr"]
 TimeStepSize: tp.TypeAlias = jpt.Float
 Dimension: tp.TypeAlias = jpt.Integer
 NumDiscretization: tp.TypeAlias = jpt.Integer
+NumReplications: tp.TypeAlias = jpt.Integer
 
 
 def calc_dW(
-    key: KeyArrayLike, delta_t: TimeStepSize, num_discr: NumDiscretization, d: Dimension
-) -> jpt.Float[jpt.Array, "num_discr d"]:
+    key: KeyArrayLike,
+    delta_t: TimeStepSize,
+    num_discr: NumDiscretization,
+    num_replications: NumReplications,
+    d: Dimension,
+) -> jpt.Float[jpt.Array, "num_discr num_replications d"]:
     """
     Sample [dW_{1,t}, \\ldots, dW{d,t}]
     """
-    mean = jnp.repeat(0, d)
-    cov = delta_t * jnp.eye(d)
-    shape = (num_discr,)
-
-    return jax.random.multivariate_normal(key=key, mean=mean, cov=cov, shape=shape)
+    return jnp.sqrt(delta_t) * jax.random.normal(
+        key=key, shape=(num_replications, num_discr, d)
+    )
 
 
-def calc_dnu_1_squared(
+@jit
+def calc_dnu_1(
     ts: TimeSequence,
     delta_t: TimeStepSize,
     alpha_1: jpt.Float,
@@ -85,59 +83,39 @@ def calc_dnu_1_squared(
     nu_1_init: jpt.Float,
 ) -> jpt.Float[jpt.Array, "ts.size"]:
     """
-    Simulate d\\nu_{1t}^2 = \\alpha_1 \\nu_{1t}^2 dt + dW_{1t}
+    Simulate d\\nu_{1t} = \\alpha_1 \\nu_{1t} dt + dW_{1t}
     """
 
-    def _drift(nu_1_squared_t_minus_1):
-        return alpha_1 * nu_1_squared_t_minus_1
+    def _drift(nu_1_t_minus_1):
+        return alpha_1 * nu_1_t_minus_1
 
-    def _diffusion(nu_1_squared_t_minus_1):
+    def _diffusion():
         return 1.0
 
-    # def _calc_nu_1_squared_t(dW_1t, nu_1_squared_t_minus_1):
-    #     nu_1_squared_t = (
-    #         nu_1_squared_t_minus_1
-    #         + _drift(nu_1_squared_t_minus_1) * delta_t
-    #         + _diffusion(nu_1_squared_t_minus_1) * dW_1t
-    #     )
-    #     return nu_1_squared_t, nu_1_squared_t
-
-    def _calc_nu_1_squared_t(carry, xs):
+    def _calc_nu_1_t(carry, xs):
         dW_1t = xs
-        nu_1_squared_t_minus_1 = carry
+        nu_1_t_minus_1 = carry
 
-        nu_1_squared_t = (
-            nu_1_squared_t_minus_1
-            + _drift(nu_1_squared_t_minus_1=nu_1_squared_t_minus_1) * delta_t
-            + _diffusion(nu_1_squared_t_minus_1=nu_1_squared_t_minus_1) * dW_1t
+        nu_1_t = (
+            nu_1_t_minus_1
+            + _drift(nu_1_t_minus_1=nu_1_t_minus_1) * delta_t
+            + _diffusion() * dW_1t
         )
-        carry = nu_1_squared_t
+        carry = nu_1_t
         return carry, carry
 
+    _, vec_nu_1 = jax.lax.scan(
+        _calc_nu_1_t, init=nu_1_init, xs=dW_1[1:]
+    )
+    vec_nu_1 = jnp.insert(
+        vec_nu_1, obj=0, values=nu_1_init, axis=0
+    )
 
-    # vec_nu_1_squared = jnp.zeros(ts.size)
-    # vec_nu_1_squared = vec_nu_1_squared.at[0].set(nu_1_init**2)
-    #
-    # for ii in range(1, ts.size):
-    #     nu_1_squared_t_minus_1 = vec_nu_1_squared[ii - 1]
-    #
-    #     nu_1_squared_t = (
-    #         nu_1_squared_t_minus_1
-    #         + _drift(nu_1_squared_t_minus_1) * delta_t
-    #         + _diffusion(nu_1_squared_t_minus_1) * dW_1[ii]
-    #     )
-    #     vec_nu_1_squared = vec_nu_1_squared.at[ii].set(nu_1_squared_t)
+    return vec_nu_1
 
 
-    nu_1_squared_init = nu_1_init**2
-    _, vec_nu_1_squared = jax.lax.scan(_calc_nu_1_squared_t, init = nu_1_squared_init, xs = dW_1[1:])
-    vec_nu_1_squared = jnp.insert(vec_nu_1_squared, obj=0, values=nu_1_squared_init, axis = 0)
-
-    return vec_nu_1_squared
-
-
-# @jit
-def calc_dnu_2_squared(
+@jit
+def calc_dnu_2(
     ts: TimeSequence,
     delta_t: jpt.Float,
     alpha_2: jpt.Float,
@@ -146,59 +124,38 @@ def calc_dnu_2_squared(
     nu_2_init: jpt.Float,
 ) -> jpt.Float[jpt.Array, "ts.size"]:
     """
-    Simulate d\\nu_{2t}^2 = \\alpha_2 \\nu_{2t}^2 dt + (1 + \\phi \\nu_{2t}^2)dW_{1t}
+    Simulate d\\nu_{2t} = \\alpha_2 \\nu_{2t} dt + (1 + \\phi \\nu_{2t})dW_{2t}
     """
 
+    def _drift(nu_2_t_minus_1):
+        return alpha_2 * nu_2_t_minus_1
 
-    def _drift(nu_2_squared_t_minus_1):
-        return alpha_2 * nu_2_squared_t_minus_1
+    def _diffusion(nu_2_t_minus_1):
+        return 1 + phi * nu_2_t_minus_1
 
-    def _diffusion(nu_2_squared_t_minus_1):
-        return 1 + phi * nu_2_squared_t_minus_1
-
-    # def _calc_nu_2_squared_t(dW_2t, nu_2_squared_t_minus_1):
-    #     nu_2_squared_t = (
-    #         nu_2_squared_t_minus_1
-    #         + _drift(nu_2_squared_t_minus_1) * delta_t
-    #         + _diffusion(nu_2_squared_t_minus_1) * dW_2t
-    #     )
-    #     return nu_2_squared_t, nu_2_squared_t
-
-    def _calc_nu_2_squared_t(carry, xs):
+    def _calc_nu_2_t(carry, xs):
         dW_2t = xs
-        nu_2_squared_t_minus_1 = carry
+        nu_2_t_minus_1 = carry
 
-        nu_2_squared_t = (
-            nu_2_squared_t_minus_1
-            + _drift(nu_2_squared_t_minus_1=nu_2_squared_t_minus_1) * delta_t
-            + _diffusion(nu_2_squared_t_minus_1=nu_2_squared_t_minus_1) * dW_2t
+        nu_2_t = (
+            nu_2_t_minus_1
+            + _drift(nu_2_t_minus_1=nu_2_t_minus_1) * delta_t
+            + _diffusion(nu_2_t_minus_1=nu_2_t_minus_1) * dW_2t
         )
-        carry = nu_2_squared_t
+        carry = nu_2_t
         return carry, carry
 
+    _, vec_nu_2 = jax.lax.scan(
+        _calc_nu_2_t, init=nu_2_init, xs=dW_2[1:]
+    )
+    vec_nu_2 = jnp.insert(
+        arr=vec_nu_2, obj=0, values=nu_2_init, axis=0
+    )
 
-    # vec_nu_2_squared = jnp.zeros(ts.size)
-    # vec_nu_2_squared = vec_nu_2_squared.at[0].set(nu_2_init**2)
-    #
-    # for ii in range(1, ts.size):
-    #     nu_2_squared_t_minus_1 = vec_nu_2_squared[ii - 1]
-    #
-    #     nu_2_squared_t = (
-    #         nu_2_squared_t_minus_1
-    #         + _drift(nu_2_squared_t_minus_1) * delta_t
-    #         + _diffusion(nu_2_squared_t_minus_1) * dW_2[ii]
-    #     )
-    #     vec_nu_2_squared = vec_nu_2_squared.at[ii].set(nu_2_squared_t)
-    #
-    nu_2_squared_init = nu_2_init**2
-
-    _, vec_nu_2_squared = jax.lax.scan(_calc_nu_2_squared_t, init = nu_2_squared_init, xs = dW_2[1:])
-    vec_nu_2_squared = jnp.insert(arr=vec_nu_2_squared, obj=0, values=nu_2_squared_init, axis=0)
-
-    return vec_nu_2_squared
+    return vec_nu_2
 
 
-# @jit
+@jit
 def spline_exponential(x: jpt.Float) -> jpt.Float:
     """
     Define the s-exp function of Chernov, Gallant, Ghysels and Tauchen (2013)
@@ -215,196 +172,225 @@ def spline_exponential(x: jpt.Float) -> jpt.Float:
     )
 
 
-# @jit
-def calc_nu_squared(
+@jit
+def calc_nu(
     beta,
-    vec_nu_1_squared: jpt.Float[jpt.Array, "ts.size"],
-    vec_nu_2_squared: jpt.Float[jpt.Array, "ts.size"],
+    vec_nu_1: jpt.Float[jpt.Array, "ts.size"],
+    vec_nu_2: jpt.Float[jpt.Array, "ts.size"],
 ) -> jpt.Float[jpt.Array, "ts.size"]:
     """
-    Calculate \\nu_t^2 = s-exp( \\beta_0 + \\beta_1\\nu_{1t}^2 + \\beta_2\\nu_{2t}^2 )
+    Calculate \\nu_t = s-exp( \\beta_0 + \\beta_1\\nu_{1t} + \\beta_2\\nu_{2t})
     """
-    val = beta[0] + beta[1] * vec_nu_1_squared + beta[2] * vec_nu_2_squared
+    val = beta[0] + beta[1] * vec_nu_1 + beta[2] * vec_nu_2
     return spline_exponential(val)
 
 
-# @jit
+@jit
 def calc_sigma_u(
-    tt: jpt.Float, A: jpt.Float, B: jpt.Float, C: jpt.Float, a: jpt.Float, b: jpt.Float
+    tt: jpt.Float,
+    A: jpt.Float,
+    B: jpt.Float,
+    C: jpt.Float,
+    a: jpt.Float,
+    b: jpt.Float,
+    t_end: jpt.Float = 1.0,
 ) -> jpt.Float:
     """
-    Diurnal U-shape function \\sigma_{ut} = C + A e^{-at} + B e^{-b(1 - t)}
+    Diurnal U-shape function \\sigma_{ut} = C + A e^{-at} + B e^{-b(1 - t)} over [0, T]
     """
-    return C + A * jnp.exp(-a * tt) + B * jnp.exp(-b * (1 - tt))
+    return C + A * jnp.exp(-a * tt) + B * jnp.exp(-b * (t_end - tt))
 
 
-def calc_dlogS(
+@jit
+def calc_dlogS_oneday(
     ts: jpt.Float[jpt.Array, "ts.size"],
     delta_t: jpt.Float,
-    params: ParamsTwoFactorSV,
-    dW : jpt.Float[jpt.Array, "ts.size"],
-    price_init: jpt.Float,
-    nu_init: jpt.Float,
-) -> jpt.Float[jpt.Array, "ts.size"]:
+    mu: jpt.Float,
+    rho: jpt.Array,
+    alpha: jpt.Array,
+    phi: jpt.Float,
+    beta: jpt.Array,
+    dict_params_sigma_u: tp.Dict[str, jpt.Float],
+    dW: jpt.Float[jpt.Array, "ts.size"],
+    init_S: jpt.Float,
+    init_nu: jpt.Float,
+) -> tp.Tuple[ jpt.Float[jpt.Array, "ts.size"], jpt.Float[jpt.Array, "ts.size"], jpt.Float[jpt.Array, "ts.size"]]:
+    """
+    Simulate prices for a single day.
+    """
 
     def _drift():
-        return params.mu
+        return mu
 
-    def _diffusion_1(i):
+    def _diffusion_1(sigma_u_t, nu_t):
         """
         Diffusion term \\rho_1\\sigma_{ut}\\nu_t
         """
-        return params.rho[0] * vec_sigma_u[i] * vec_nu[i]
+        return rho[0] * sigma_u_t * nu_t
 
-    def _diffusion_2(i):
+    def _diffusion_2(sigma_u_t, nu_t):
         """
         Diffusion term \\rho_2\\sigma_{ut}\\nu_t
         """
-        return params.rho[1] * vec_sigma_u[i] * vec_nu[i]
+        return rho[1] * sigma_u_t * nu_t
 
-    def _diffusion_3(i):
+    def _diffusion_3(sigma_u_t, nu_t):
         """
         Diffusion term \\sqrt{1 - \\rho_1^2 - \\rho_2^2}\\sigma_{ut}\\nu_t
         """
-        return (
-            jnp.sqrt(1 - params.rho[1] ** 2 - params.rho[2] ** 2)
-            * vec_sigma_u[i]
-            * vec_nu[i]
-        )
+        return jnp.sqrt(1 - rho[1] ** 2 - rho[2] ** 2) * sigma_u_t * nu_t
 
-    def _calc_logS_t(ii, logS_t_minus_1):
-        """
-        Convenient solution for transitioning to \\log S_t
-        """
-        logS_t = (
-            logS_t_minus_1
-            + _drift() * delta_t
-            + _diffusion_1(ii) * dW[ii, 0]
-            + _diffusion_2(ii) * dW[ii, 1]
-            + _diffusion_3(ii) * dW[ii, 2]
-        )
-        # vec_logS = vec_logS.at[ii].set(logS_t)
-
-        return ii + 1, logS_t
-
-    def _diffusion_11(sigma_u_t, nu_t):
-        """
-        Diffusion term \\rho_1\\sigma_{ut}\\nu_t
-        """
-        return params.rho[0] * sigma_u_t * nu_t
-
-    def _diffusion_22(sigma_u_t, nu_t):
-        """
-        Diffusion term \\rho_2\\sigma_{ut}\\nu_t
-        """
-        return params.rho[1] * sigma_u_t * nu_t
-
-    def _diffusion_33(sigma_u_t, nu_t):
-        """
-        Diffusion term \\sqrt{1 - \\rho_1^2 - \\rho_2^2}\\sigma_{ut}\\nu_t
-        """
-        return (
-            jnp.sqrt(1 - params.rho[1] ** 2 - params.rho[2] ** 2)
-            * sigma_u_t
-            * nu_t
-        )
-
-    def _calc_logS_tt(carry, xs):
+    @jit
+    def _calc_logS_t(carry, xs):
         dW_t, sigma_u_t_minus_1, nu_t_minus_1 = xs
         logS_t_minus_1 = carry
 
         logS_t = (
             logS_t_minus_1
             + _drift() * delta_t
-            + _diffusion_11(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[0]
-            + _diffusion_22(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[1]
-            + _diffusion_33(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[2]
+            + _diffusion_1(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[0]
+            + _diffusion_2(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[1]
+            + _diffusion_3(sigma_u_t_minus_1, nu_t_minus_1) * dW_t[2]
         )
         carry = logS_t
         return carry, carry
 
     # Compute \\nu_t's
-    vec_nu_1_squared = calc_dnu_1_squared(
+    vec_nu_1 = calc_dnu_1(
         ts=ts,
         delta_t=delta_t,
-        alpha_1=params.alpha[0],
+        alpha_1=alpha[0],
         dW_1=dW[:, 0],
-        nu_1_init=nu_init[0],
+        nu_1_init=init_nu[0],
     )
-    vec_nu_2_squared = calc_dnu_2_squared(
+    vec_nu_2 = calc_dnu_2(
         ts=ts,
         delta_t=delta_t,
-        alpha_2=params.alpha[1],
-        phi=params.phi,
+        alpha_2=alpha[1],
+        phi=phi,
         dW_2=dW[:, 1],
-        nu_2_init=nu_init[1],
+        nu_2_init=init_nu[1],
     )
-    vec_nu_squared = calc_nu_squared(
-        beta=params.beta,
-        vec_nu_1_squared=vec_nu_1_squared,
-        vec_nu_2_squared=vec_nu_2_squared,
+    vec_nu = calc_nu(
+        beta=beta,
+        vec_nu_1=vec_nu_1,
+        vec_nu_2=vec_nu_2,
     )
-    vec_nu = jnp.sqrt(vec_nu_squared)
 
     # Compute \\sigma_{ut}'s
-    vec_sigma_u = calc_sigma_u(
-        ts, A=params.A, B=params.B, C=params.C, a=params.a, b=params.b
+    vec_sigma_u = calc_sigma_u(ts, **dict_params_sigma_u)
+    logS_init = jnp.log(init_S)
+    xs = (dW[1:], vec_sigma_u[:-1], vec_nu[:-1])
+    _, vec_logS = jax.lax.scan(_calc_logS_t, init=logS_init, xs=xs)
+    vec_logS = jnp.insert(vec_logS, 0, logS_init, axis=0)
+
+    return vec_nu_1, vec_nu_2, vec_logS
+
+
+def calc_dlogS_all_days(
+    total_num_days: int,
+    delta_t: jpt.Float,
+    params: ParamsTwoFactorSV,
+    all_days_dW: jpt.Float[jpt.Array, "total_num_days*num_discr 3"],
+    init_price: jpt.Float,
+    init_nu: jpt.Float,
+) -> jpt.Array:
+    """
+    Simulate prices across all days.
+    """
+    # Split Brownian shocks into separate days
+    lst_split_dW = jnp.split(all_days_dW, total_num_days)
+
+    dict_params_sigma_u = {
+        "A": params.A,
+        "B": params.B,
+        "C": params.C,
+        "a": params.a,
+        "b": params.b,
+    }
+
+    lst_vec_S = []
+    init_S = init_price
+    for day in range(total_num_days):
+        dW = lst_split_dW[day]
+        vec_nu_1, vec_nu_2, vec_logS = calc_dlogS_oneday(
+            ts=ts,
+            delta_t=delta_t,
+            mu=params.mu,
+            rho=params.rho,
+            alpha=params.alpha,
+            phi=params.phi,
+            beta=params.beta,
+            dict_params_sigma_u=dict_params_sigma_u,
+            dW=dW,
+            init_S=init_S,
+            init_nu=init_nu,
+        )
+        vec_S = jnp.exp(vec_logS)
+
+        lst_vec_S.append(vec_S)
+
+        # Reset initial conditions
+        init_S = vec_S[-1]
+        init_nu = jnp.array([vec_nu_1[-1], vec_nu_2[-1]])
+
+    price = jnp.concat(lst_vec_S)
+    return price
+
+
+if __name__ == "__main__":
+    # HACK:
+    seed = 12345
+    if seed is None:
+        seed = utils.gen_seed_number()
+    key = random.key(seed)
+    rng = np.random.default_rng(seed)
+
+    params = ParamsTwoFactorSV()
+
+    num_epochs = 10  # Total number of simulation epochs to run
+
+    # Initial conditions
+    init_nu_1 = jax.random.normal(key=key) * jnp.sqrt(-1 / (2 * params.alpha[0]))
+    init_nu_2 = 0.0
+    init_nu = jnp.array([init_nu_1, init_nu_2])
+    init_price = 1.0
+
+    d = 3  # Dimension is fixed as per two-factor SV model for single asset
+
+    num_time_units_per_day = 23400  # i.e. Number of seconds in one trading day
+    t_init = 0
+    t_end = 1
+    num_discr = num_time_units_per_day
+    delta_t = float((t_end - t_init)) / num_discr
+    ts = jnp.linspace(start=t_init, stop=t_end, num=num_discr, endpoint=True)
+
+    total_num_days = 15  # Total number of days to simulate
+
+    # Simulate Brownian motions across all epochs and all days
+    all_dW = calc_dW(
+        key=key,
+        delta_t=delta_t,
+        num_discr=total_num_days * num_discr,
+        num_replications=num_epochs,
+        d=d,
     )
 
+    # Simulate across all epochs
+    lst_price_epochs = []
+    for epoch in range(num_epochs):
+        all_days_dW = all_dW[epoch, :, :]
+        price = calc_dlogS_all_days(
+            total_num_days=total_num_days,
+            delta_t=delta_t,
+            params=params,
+            all_days_dW=all_days_dW,
+            init_price=init_price,
+            init_nu=init_nu,
+        )
 
+        lst_price_epochs.append(price)
 
-    # # Compute \\logS_t's
-    # vec_logS = jnp.zeros(ts.size)
-    # vec_logS = vec_logS.at[0].set(jnp.log(price_init))
-    #
-    # for ii in range(1, ts.size):
-    #     logS_t_minus_1 = vec_logS[ii - 1]
-    #
-    #     logS_t = (
-    #         logS_t_minus_1
-    #         + _drift() * delta_t
-    #         + _diffusion_1(ii - 1) * dW[ii - 1, 0]
-    #         + _diffusion_2(ii - 1) * dW[ii - 1, 1]
-    #         + _diffusion_3(ii - 1) * dW[ii - 1, 2]
-    #     )
-    #     vec_logS = vec_logS.at[ii].set(logS_t)
-
-
-
-    logS_init =jnp.log(price_init)
-    xs = (dW, vec_sigma_u, vec_nu)
-    _, vec_logS = jax.lax.scan(_calc_logS_tt, init = logS_init, xs = xs)
-    vec_logS = jnp.insert(vec_logS, 0, logS_init, axis = 0)
-    vec_logS = jnp.delete(vec_logS, -1, axis = 0)
-
-    return vec_logS
-
-
-d = 3
-t_init = 0
-t_end = 1
-burn_in_discr = 0
-num_discr = 23400
-tot_discr = burn_in_discr + num_discr
-delta_t = float((t_end - t_init)) / tot_discr
-ts = jnp.arange(t_init, t_end + delta_t, delta_t)
-assert ts.size == tot_discr + 1
-
-params = ParamsTwoFactorSV()
-
-dW = calc_dW(key=key, delta_t=delta_t, num_discr=ts.size, d=d)
-
-# Initial conditions
-nu_1_init = jax.random.normal(key=key) * jnp.sqrt(-1 / (2 * params.alpha[0]))
-nu_2_init = 0.0
-nu_init = jnp.array([nu_1_init, nu_2_init])
-price_init = 1.0
-
-
-vec_logS = calc_dlogS(
-    ts=ts, delta_t=delta_t, params=params, dW=dW, price_init=price_init, nu_init=nu_init
-)
-vec_S = jnp.exp(vec_logS)
-
-plt.plot(vec_S[burn_in_discr:])
-plt.show()
+    for epoch in range(num_epochs):
+        plt.plot(lst_price_epochs[epoch])
+    plt.show()
