@@ -24,6 +24,8 @@ import pickle
 import argparse
 import os
 
+import time
+
 from matplotlib import pyplot as plt
 
 
@@ -33,11 +35,54 @@ from dataclasses import dataclass
 import utils
 
 # jax.config.update("jax_enable_x64", True)  # Should use x32 in full prod
-jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+# jax.config.update("jax_debug_nans", True)  # Should disable in full prod
+
+
+TimeSequence: tp.TypeAlias = jpt.Float[jpt.Array, "num_discr"]
+TimeStepSize: tp.TypeAlias = jpt.Float
+Dimension: tp.TypeAlias = jpt.Integer
+NumDiscretization: tp.TypeAlias = jpt.Integer
+NumReplications: tp.TypeAlias = jpt.Integer
+DeltaT: tp.TypeAlias = jpt.Float
+SimulationPathOneDay: tp.TypeAlias = jpt.Float[jpt.Array, "num_discr"]
+SimulationPathOneDay3: tp.TypeAlias = jpt.Float[jpt.Array, "num_discr"]
+SimulationPathAllDays3: tp.TypeAlias = jpt.Float[
+    jpt.Array, "num_discr*total_num_days 3"
+]
+SimulationPathAllDaysAllEpochs: tp.TypeAlias = jpt.Float[
+    jpt.Array, "total_num_epochs num_discr*total_num_days"
+]
+SimulationPathAllDaysAllEpochs3: tp.TypeAlias = jpt.Float[
+    jpt.Array, "total_num_epochs num_discr*total_num_days 3"
+]
 
 
 @dataclass
 class ParamsTwoFactorSV:
+    seed: int = 12345
+    key: KeyArrayLike = dataclasses.field(init=False)
+
+    # Total number of simulation epochs to run
+    total_num_epochs: int = 5
+
+    # Total number of days to simulate
+    total_num_days: int = 1000
+
+    # Initial values
+    init_price: float = 1.0  # Initial asset price
+    init_nu: jpt.Array = dataclasses.field(init=False)
+
+    # These parameters should essentially be fixed
+    t_init: float = 0
+    t_end: float = 1
+    d: int = 3  # Dimension is fixed as per two-factor SV model for single asset
+    num_time_units_per_day: int = 23400  # i.e. Number of seconds in one trading day
+
+    # Time steps
+    delta_t: TimeStepSize = dataclasses.field(init=False)
+    ts: TimeSequence = dataclasses.field(init=False)
+
+    #  Parameters for the d\\logS, d\\nu_1 and d\\nu_2 processes
     mu: jpt.Float = 0.030
     beta: jpt.Array = jnp.array([-1.200, 0.040, 1.500])
     alpha: jpt.Array = jnp.array([-0.00137, -1.386])
@@ -51,12 +96,23 @@ class ParamsTwoFactorSV:
     a: jpt.Float = 10.0
     b: jpt.Float = 10.0
 
+    def __post_init__(self):
+        # Set JAX key
+        self.key = random.key(self.seed)
 
-TimeSequence: tp.TypeAlias = jpt.Float[jpt.Array, "num_discr"]
-TimeStepSize: tp.TypeAlias = jpt.Float
-Dimension: tp.TypeAlias = jpt.Integer
-NumDiscretization: tp.TypeAlias = jpt.Integer
-NumReplications: tp.TypeAlias = jpt.Integer
+        # Set random initial conditions for \\nu_1, \\nu_2
+        init_nu_1 = jax.random.normal(key=self.key) * jnp.sqrt(-1 / (2 * self.alpha[0]))
+        init_nu_2 = 0.0
+        self.init_nu = jnp.array([init_nu_1, init_nu_2])
+
+        # Time steps
+        self.delta_t = float((self.t_end - self.t_init)) / self.num_time_units_per_day
+        self.ts = jnp.linspace(
+            start=self.t_init,
+            stop=self.t_end,
+            num=self.num_time_units_per_day,
+            endpoint=True,
+        )
 
 
 def calc_dW(
@@ -76,12 +132,11 @@ def calc_dW(
 
 @jit
 def calc_dnu_1(
-    ts: TimeSequence,
     delta_t: TimeStepSize,
     alpha_1: jpt.Float,
-    dW_1: jpt.Float[jpt.Array, "ts.size"],
+    dW_1: SimulationPathOneDay,
     nu_1_init: jpt.Float,
-) -> jpt.Float[jpt.Array, "ts.size"]:
+) -> SimulationPathOneDay:
     """
     Simulate d\\nu_{1t} = \\alpha_1 \\nu_{1t} dt + dW_{1t}
     """
@@ -104,25 +159,20 @@ def calc_dnu_1(
         carry = nu_1_t
         return carry, carry
 
-    _, vec_nu_1 = jax.lax.scan(
-        _calc_nu_1_t, init=nu_1_init, xs=dW_1[1:]
-    )
-    vec_nu_1 = jnp.insert(
-        vec_nu_1, obj=0, values=nu_1_init, axis=0
-    )
+    _, vec_nu_1 = jax.lax.scan(_calc_nu_1_t, init=nu_1_init, xs=dW_1[1:])
+    vec_nu_1 = jnp.insert(vec_nu_1, obj=0, values=nu_1_init, axis=0)
 
     return vec_nu_1
 
 
 @jit
 def calc_dnu_2(
-    ts: TimeSequence,
     delta_t: jpt.Float,
     alpha_2: jpt.Float,
     phi: jpt.Float,
-    dW_2: jpt.Float[jpt.Array, "ts.size"],
+    dW_2: SimulationPathOneDay,
     nu_2_init: jpt.Float,
-) -> jpt.Float[jpt.Array, "ts.size"]:
+) -> SimulationPathOneDay:
     """
     Simulate d\\nu_{2t} = \\alpha_2 \\nu_{2t} dt + (1 + \\phi \\nu_{2t})dW_{2t}
     """
@@ -145,12 +195,8 @@ def calc_dnu_2(
         carry = nu_2_t
         return carry, carry
 
-    _, vec_nu_2 = jax.lax.scan(
-        _calc_nu_2_t, init=nu_2_init, xs=dW_2[1:]
-    )
-    vec_nu_2 = jnp.insert(
-        arr=vec_nu_2, obj=0, values=nu_2_init, axis=0
-    )
+    _, vec_nu_2 = jax.lax.scan(_calc_nu_2_t, init=nu_2_init, xs=dW_2[1:])
+    vec_nu_2 = jnp.insert(arr=vec_nu_2, obj=0, values=nu_2_init, axis=0)
 
     return vec_nu_2
 
@@ -201,9 +247,9 @@ def calc_sigma_u(
     return C + A * jnp.exp(-a * tt) + B * jnp.exp(-b * (t_end - tt))
 
 
-@jit
+# @jit
 def calc_dlogS_oneday(
-    ts: jpt.Float[jpt.Array, "ts.size"],
+    ts: TimeSequence,
     delta_t: jpt.Float,
     mu: jpt.Float,
     rho: jpt.Array,
@@ -211,10 +257,14 @@ def calc_dlogS_oneday(
     phi: jpt.Float,
     beta: jpt.Array,
     dict_params_sigma_u: tp.Dict[str, jpt.Float],
-    dW: jpt.Float[jpt.Array, "ts.size"],
+    dW: SimulationPathOneDay3,
     init_S: jpt.Float,
     init_nu: jpt.Float,
-) -> tp.Tuple[ jpt.Float[jpt.Array, "ts.size"], jpt.Float[jpt.Array, "ts.size"], jpt.Float[jpt.Array, "ts.size"]]:
+) -> tp.Tuple[
+    SimulationPathOneDay,  # vec_nu_1
+    SimulationPathOneDay,  # vec_nu_2
+    SimulationPathOneDay,  # vec_logS
+]:
     """
     Simulate prices for a single day.
     """
@@ -257,14 +307,12 @@ def calc_dlogS_oneday(
 
     # Compute \\nu_t's
     vec_nu_1 = calc_dnu_1(
-        ts=ts,
         delta_t=delta_t,
         alpha_1=alpha[0],
         dW_1=dW[:, 0],
         nu_1_init=init_nu[0],
     )
     vec_nu_2 = calc_dnu_2(
-        ts=ts,
         delta_t=delta_t,
         alpha_2=alpha[1],
         phi=phi,
@@ -288,18 +336,14 @@ def calc_dlogS_oneday(
 
 
 def calc_dlogS_all_days(
-    total_num_days: int,
-    delta_t: jpt.Float,
     params: ParamsTwoFactorSV,
-    all_days_dW: jpt.Float[jpt.Array, "total_num_days*num_discr 3"],
-    init_price: jpt.Float,
-    init_nu: jpt.Float,
-) -> jpt.Array:
+    all_days_dW: SimulationPathAllDays3,
+) -> tp.Tuple[jpt.Array, jpt.Array, jpt.Array]:
     """
-    Simulate prices across all days.
+    Simulate log-prices across all days.
     """
     # Split Brownian shocks into separate days
-    lst_split_dW = jnp.split(all_days_dW, total_num_days)
+    lst_split_dW = jnp.split(all_days_dW, params.total_num_days)
 
     dict_params_sigma_u = {
         "A": params.A,
@@ -309,13 +353,16 @@ def calc_dlogS_all_days(
         "b": params.b,
     }
 
-    lst_vec_S = []
-    init_S = init_price
-    for day in range(total_num_days):
+    lst_vec_logS = []
+    lst_vec_nu_1 = []
+    lst_vec_nu_2 = []
+    init_S = params.init_price
+    init_nu = params.init_nu
+    for day in range(params.total_num_days):
         dW = lst_split_dW[day]
         vec_nu_1, vec_nu_2, vec_logS = calc_dlogS_oneday(
-            ts=ts,
-            delta_t=delta_t,
+            ts=params.ts,
+            delta_t=params.delta_t,
             mu=params.mu,
             rho=params.rho,
             alpha=params.alpha,
@@ -326,71 +373,94 @@ def calc_dlogS_all_days(
             init_S=init_S,
             init_nu=init_nu,
         )
-        vec_S = jnp.exp(vec_logS)
 
-        lst_vec_S.append(vec_S)
+        # Append
+        lst_vec_logS.append(vec_logS)
+        lst_vec_nu_1.append(vec_nu_1)
+        lst_vec_nu_2.append(vec_nu_2)
 
         # Reset initial conditions
-        init_S = vec_S[-1]
+        init_S = jnp.exp(vec_logS[-1])
         init_nu = jnp.array([vec_nu_1[-1], vec_nu_2[-1]])
 
-    price = jnp.concat(lst_vec_S)
-    return price
+    log_price = jnp.concat(lst_vec_logS)
+    vol_factor_1 = jnp.concat(lst_vec_nu_1)
+    vol_factor_2 = jnp.concat(lst_vec_nu_2)
+    return vol_factor_1, vol_factor_2, log_price
+
+
+def simulate_dlogS_all_epochs(
+    params: ParamsTwoFactorSV,
+) -> SimulationPathAllDaysAllEpochs:
+    """
+    Simulate log-prices across all days and all epochs.
+    """
+    # Simulate Brownian motions across all epochs and all days
+    all_dW = calc_dW(
+        key=params.key,
+        delta_t=params.delta_t,
+        num_discr=params.total_num_days * params.num_time_units_per_day,
+        num_replications=params.total_num_epochs,
+        d=params.d,
+    )
+
+    @jit
+    def _func(all_days_dW):
+        _, _, log_price = calc_dlogS_all_days(
+            params=params,
+            all_days_dW=all_days_dW,
+        )
+        return log_price
+
+    res = jax.vmap(_func, in_axes=[0])(all_dW)
+    return res
 
 
 if __name__ == "__main__":
-    # HACK:
-    seed = 12345
-    if seed is None:
-        seed = utils.gen_seed_number()
-    key = random.key(seed)
-    rng = np.random.default_rng(seed)
-
     params = ParamsTwoFactorSV()
 
-    num_epochs = 10  # Total number of simulation epochs to run
-
-    # Initial conditions
-    init_nu_1 = jax.random.normal(key=key) * jnp.sqrt(-1 / (2 * params.alpha[0]))
-    init_nu_2 = 0.0
-    init_nu = jnp.array([init_nu_1, init_nu_2])
-    init_price = 1.0
-
-    d = 3  # Dimension is fixed as per two-factor SV model for single asset
-
-    num_time_units_per_day = 23400  # i.e. Number of seconds in one trading day
-    t_init = 0
-    t_end = 1
-    num_discr = num_time_units_per_day
-    delta_t = float((t_end - t_init)) / num_discr
-    ts = jnp.linspace(start=t_init, stop=t_end, num=num_discr, endpoint=True)
-
-    total_num_days = 15  # Total number of days to simulate
-
-    # Simulate Brownian motions across all epochs and all days
-    all_dW = calc_dW(
-        key=key,
-        delta_t=delta_t,
-        num_discr=total_num_days * num_discr,
-        num_replications=num_epochs,
-        d=d,
+    t0 = time.time()
+    hi = simulate_dlogS_all_epochs(
+        params=params,
     )
+    t1 = time.time()
+    tot_time = round(t1 - t0, 2)
+    print(f"Simulation time {tot_time} sec")
 
-    # Simulate across all epochs
-    lst_price_epochs = []
-    for epoch in range(num_epochs):
-        all_days_dW = all_dW[epoch, :, :]
-        price = calc_dlogS_all_days(
-            total_num_days=total_num_days,
-            delta_t=delta_t,
-            params=params,
-            all_days_dW=all_days_dW,
-            init_price=init_price,
-            init_nu=init_nu,
-        )
-
-        lst_price_epochs.append(price)
-
-    for epoch in range(num_epochs):
-        plt.plot(lst_price_epochs[epoch])
+    for epoch in range(params.total_num_epochs):
+        plt.plot(hi[epoch, :])
     plt.show()
+
+    breakpoint()
+
+    # # Simulate across all epochs
+    # lst_price_epochs = []
+    # lst_vol_factor_1_epochs = []
+    # lst_vol_factor_2_epochs = []
+    # for epoch in range(num_epochs):
+    #     all_days_dW = all_dW[epoch, :, :]
+    #     vol_factor_1, vol_factor_2, price = calc_dlogS_all_days(
+    #         total_num_days=total_num_days,
+    #         delta_t=delta_t,
+    #         params=params,
+    #         all_days_dW=all_days_dW,
+    #         init_price=init_price,
+    #         init_nu=init_nu,
+    #     )
+    #
+    #     lst_price_epochs.append(price)
+    #     lst_vol_factor_1_epochs.append(vol_factor_1)
+    #     lst_vol_factor_2_epochs.append(vol_factor_2)
+
+    # for epoch in range(num_epochs):
+    #     plt.plot(lst_price_epochs[epoch])
+    # plt.show()
+    #
+    # for epoch in range(num_epochs):
+    #     plt.plot(lst_vol_factor_1_epochs[epoch])
+    # plt.show()
+    #
+    # for epoch in range(num_epochs):
+    #     plt.plot(lst_vol_factor_2_epochs[epoch])
+    # plt.show()
+    #
